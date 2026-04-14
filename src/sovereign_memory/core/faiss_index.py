@@ -245,6 +245,48 @@ class FAISSIndex:
                 self._reverse_map = {}
                 self._index = None
 
+    def save(self, path: Optional[str] = None) -> None:
+        """Save index to disk for persistence across restarts."""
+        path = path or self.config.faiss_index_path
+        if not self._chunk_ids or not self._vectors:
+            logger.debug("No vectors to save")
+            return
+
+        import json as _json
+        meta = {
+            "chunk_ids": self._chunk_ids,
+            "index_type": self._current_type,
+        }
+        vecs = np.array(self._vectors, dtype=np.float32)
+
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        np.save(path + ".vectors.npy", vecs)
+        with open(path + ".meta.json", "w") as f:
+            _json.dump(meta, f)
+        logger.info("Saved FAISS index to %s (%d vectors)", path, len(self._chunk_ids))
+
+    def load(self, path: Optional[str] = None) -> bool:
+        """Load index from disk. Returns True if loaded successfully."""
+        path = path or self.config.faiss_index_path
+        vec_path = path + ".vectors.npy"
+        meta_path = path + ".meta.json"
+
+        if not os.path.exists(vec_path) or not os.path.exists(meta_path):
+            return False
+
+        try:
+            import json as _json
+            vecs = np.load(vec_path)
+            with open(meta_path) as f:
+                meta = _json.load(f)
+            chunk_ids = meta["chunk_ids"]
+            self.build_from_vectors(chunk_ids, vecs)
+            logger.info("Loaded FAISS index from %s (%d vectors)", path, len(chunk_ids))
+            return True
+        except Exception as e:
+            logger.warning("Failed to load FAISS index from %s: %s", path, e)
+            return False
+
     def get_stats(self) -> Dict:
         """Return index statistics."""
         return {

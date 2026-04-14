@@ -146,8 +146,8 @@ class GraphExporter:
                                     "opacity": float(min(0.9, sim)),
                                 },
                             })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to export thread data: %s", e)
 
             # === Episodic event nodes ===
             if include_episodic:
@@ -176,8 +176,8 @@ class GraphExporter:
                                 "shape": "diamond",
                             },
                         })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to export episodic events: %s", e)
 
         return {
             "nodes": nodes,
