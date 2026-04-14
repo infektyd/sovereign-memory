@@ -41,7 +41,8 @@ def cmd_query(args, config, db):
     """Query the memory with hybrid retrieval."""
     from sovereign_memory.agents.agent_api import SovereignAgent
     agent = SovereignAgent(args.agent, config)
-    print(agent.recall(args.query, limit=args.limit))
+    query = " ".join(args.query) if isinstance(args.query, list) else args.query
+    print(agent.recall(query, limit=args.limit))
     agent.close()
 
 
@@ -57,7 +58,8 @@ def cmd_learn(args, config, db):
     """Store a new learning."""
     from sovereign_memory.agents.agent_api import SovereignAgent
     agent = SovereignAgent(args.agent_id, config)
-    lid = agent.learn(args.content, category=args.category)
+    content = " ".join(args.content) if isinstance(args.content, list) else args.content
+    lid = agent.learn(content, category=args.category)
     print(f"Stored learning #{lid} [{args.category}]")
     agent.close()
 
@@ -66,7 +68,8 @@ def cmd_learnings(args, config, db):
     """Search learnings."""
     from sovereign_memory.core.writeback import WriteBackMemory
     wb = WriteBackMemory(db, config)
-    results = wb.recall_learnings(args.query, agent_id=args.agent, category=args.category)
+    query = " ".join(args.query) if isinstance(args.query, list) else args.query
+    results = wb.recall_learnings(query, agent_id=args.agent, category=args.category)
     for r in results:
         print(f"  [{r['category']}] {r['content'][:120]} (by {r['agent_id']})")
     if not results:

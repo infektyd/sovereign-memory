@@ -105,8 +105,8 @@ class FAISSIndex:
         )
 
         if should_hnsw and n >= 1000:
-            # HNSW index
-            index = faiss.IndexHNSWFlat(self.dim, self.config.hnsw_m)
+            # HNSW index — use inner product metric for cosine similarity on normalized vectors
+            index = faiss.IndexHNSWFlat(self.dim, self.config.hnsw_m, faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efConstruction = self.config.hnsw_ef_construction
             index.hnsw.efSearch = self.config.hnsw_ef_search
             index.add(normalized)

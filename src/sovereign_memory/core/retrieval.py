@@ -163,14 +163,15 @@ class RetrievalEngine:
         doc_best: Dict[int, Dict] = {}  # doc_id → best result
 
         with self.db.cursor() as c:
-            placeholders = ",".join("?" * len(chunk_ids))
-            c.execute(f"""
-                SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
-                       d.path, d.agent, d.sigil, d.decay_score
-                FROM chunk_embeddings ce
-                JOIN documents d ON d.doc_id = ce.doc_id
-                WHERE ce.chunk_id IN ({placeholders})
-            """, chunk_ids)
+            placeholders = ",".join("?" for _ in chunk_ids)
+            c.execute(
+                "SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,"
+                "       d.path, d.agent, d.sigil, d.decay_score"
+                " FROM chunk_embeddings ce"
+                " JOIN documents d ON d.doc_id = ce.doc_id"
+                " WHERE ce.chunk_id IN ({})".format(placeholders),
+                chunk_ids,
+            )
 
             for row in c.fetchall():
                 cid = row["chunk_id"]

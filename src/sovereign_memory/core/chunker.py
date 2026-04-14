@@ -65,8 +65,10 @@ class MarkdownChunker:
                 continue
 
             # Try to keep each section as one chunk
+            # Estimate token count from word count (~1.3 tokens per word)
             words = body.split()
-            if len(words) <= self.chunk_size:
+            estimated_tokens = int(len(words) * 1.3)
+            if estimated_tokens <= self.chunk_size:
                 chunks.append(Chunk(
                     text=body.strip(),
                     heading=heading,
@@ -79,7 +81,8 @@ class MarkdownChunker:
                 blocks = self._split_atomic_blocks(body)
                 for block in blocks:
                     block_words = block.split()
-                    if len(block_words) <= self.chunk_size:
+                    block_estimated_tokens = int(len(block_words) * 1.3)
+                    if block_estimated_tokens <= self.chunk_size:
                         chunks.append(Chunk(
                             text=block.strip(),
                             heading=heading,
