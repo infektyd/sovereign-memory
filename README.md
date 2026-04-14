@@ -21,7 +21,7 @@ Sovereign Memory gives AI agents persistent, structured memory with a critical a
 │  Layer 2: KNOWLEDGE (chunked RAG)                       │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
 │  │   Wiki   │  │  Vault   │  │ Learnings │             │
-│  │  (52pg)  │  │  (67pg)  │  │ (write-back)│           │
+│  │          │  │          │  │ (write-back)│           │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘             │
 │       ↓              ↓              ↓                    │
 │  ┌─────────────────────────────────────────┐            │
@@ -68,8 +68,10 @@ identity = agent.identity_context()
 # Layer 2: Knowledge (chunked RAG)
 context = agent.startup_context(limit=10)
 
-# Runtime recall
+# Runtime recall — returns list of ranked result dicts
 results = agent.recall("websocket architecture")
+for r in results:
+    print(f"{r['filename']} (score={r['score']}): {r['chunk_text'][:80]}")
 
 # Store a learning
 agent.learn("User prefers dark mode UI", category="preference")
@@ -121,7 +123,7 @@ Each agent gets an identity directory with two files:
 | `IDENTITY.md` | Role, capabilities, constraints, communication style |
 | `SOUL.md` | Moral weights, cognitive architecture mapping, core directives |
 
-Identity files are indexed with `whole_document=1` — they are never chunked and always retrieved in full during Layer 1 hydration.
+Identity files are indexed with `whole_document=1` in the `documents` table — they are never chunked and always retrieved in full during Layer 1 hydration.
 
 ## Development
 

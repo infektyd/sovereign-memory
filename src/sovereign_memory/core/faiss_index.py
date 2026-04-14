@@ -8,7 +8,7 @@ V3.1 uses a proper FAISS index with auto-scaling:
 - Flat (exact) index under hnsw_threshold vectors
 - HNSW (approximate) index above threshold
 - Automatic rebuild when threshold is crossed
-- Persistent to disk — survives restarts
+- Optional disk persistence via save()/load() methods
 - All vectors are full-fidelity float32[384]
 """
 
