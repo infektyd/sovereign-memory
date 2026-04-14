@@ -1,0 +1,63 @@
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ── Distribution / packaging ─────────────────────
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ─────────────────────────
+venv/
+.venv/
+env/
+
+# ── Sovereign Memory runtime data ────────────────
+# These are generated at runtime — never commit user data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.index
+*.faiss
+
+# ── Embeddings cache ─────────────────────────────
+models_cache/
+embeddings_cache/
+
+# ── OS junk ──────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── IDE ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ── Secrets / credentials ────────────────────────
+.env
+.env.*
+!.env.example
+credentials/
+*.pem
+*.key
+
+# ── Test / coverage ──────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
