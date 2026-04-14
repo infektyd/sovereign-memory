@@ -103,6 +103,7 @@ class SovereignDB:
                 path TEXT UNIQUE NOT NULL,
                 agent TEXT DEFAULT 'unknown',
                 sigil TEXT DEFAULT '❓',
+                whole_document INTEGER DEFAULT 0,
                 last_modified REAL,
                 indexed_at REAL,
                 access_count INTEGER DEFAULT 0,

@@ -16,7 +16,8 @@ Usage:
 import os
 import sys
 import time
-from typing import Optional
+import uuid
+from typing import Optional, List, Dict
 
 from sovereign_memory.core.config import SovereignConfig, DEFAULT_CONFIG
 from sovereign_memory.core.db import SovereignDB
@@ -94,16 +95,15 @@ class SovereignAgent:
         self,
         query: str,
         limit: int = 5,
-        format: str = "markdown",
-    ) -> str:
+    ) -> List[Dict]:
         """
         Hybrid retrieval: FAISS semantic + FTS5 keyword, re-ranked.
+        Returns list of ranked results with scores and chunk text.
         """
-        return self.retrieval.hybrid_search(
+        return self.retrieval.retrieve(
             query=query,
             agent_id=self.agent_id,
             limit=limit,
-            format=format,
         )
 
     # ── Write-Back ─────────────────────────────────────────────
@@ -137,7 +137,7 @@ class SovereignAgent:
         metadata: Optional[dict] = None,
     ) -> int:
         """Log an episodic event."""
-        return self.episodic.log_event(
+        return self.episodic.add_event(
             agent_id=self.agent_id,
             event_type=event_type,
             content=content,
@@ -147,12 +147,15 @@ class SovereignAgent:
         )
 
     def start_task(self, description: str, task_id: Optional[str] = None) -> str:
-        """Start tracking a task."""
-        return self.episodic.start_task(
+        """Start tracking a task. Returns the task_id."""
+        if task_id is None:
+            task_id = str(uuid.uuid4())
+        self.episodic.start_task(
             agent_id=self.agent_id,
-            description=description,
             task_id=task_id,
+            description=description,
         )
+        return task_id
 
     def end_task(self, task_id: str, status: str = "completed", result: Optional[str] = None):
         """End a tracked task."""
@@ -278,16 +281,28 @@ class SovereignAgent:
     # ── Thread Operations ──────────────────────────────────────
 
     def create_thread(self, title: str, thread_id: Optional[str] = None) -> str:
-        """Create a new conversation thread."""
-        return self.episodic.create_thread(title=title, thread_id=thread_id)
+        """Create a new conversation thread. Returns the thread_id."""
+        if thread_id is None:
+            thread_id = str(uuid.uuid4())
+        self.episodic.create_thread(
+            thread_id=thread_id,
+            title=title,
+        )
+        return thread_id
 
     def get_thread(self, thread_id: str) -> Optional[dict]:
-        """Get thread details."""
-        return self.episodic.get_thread(thread_id)
+        """Get thread context including events and linked docs."""
+        return self.episodic.get_thread_context(thread_id)
 
     def link_thread_doc(self, thread_id: str, doc_id: int, similarity: float):
         """Link a document to a thread."""
-        return self.episodic.link_thread_doc(thread_id, doc_id, similarity)
+        now = time.time()
+        with self.db.cursor() as c:
+            c.execute("""
+                INSERT OR REPLACE INTO thread_doc_links
+                (thread_id, doc_id, similarity, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (thread_id, doc_id, similarity, now))
 
     # ── Graph Export ────────────────────────────────────────────
 
