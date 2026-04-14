@@ -55,6 +55,7 @@ Thumbs.db
 credentials/
 *.pem
 *.key
+.mcp.json
 
 # ── Test / coverage ──────────────────────────────
 .pytest_cache/
