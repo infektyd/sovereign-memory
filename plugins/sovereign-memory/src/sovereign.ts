@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { URL } from "node:url";
 import { AFM_HEALTH_URL, DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID, SOCKET_PATH } from "./config.js";
 import { auditTail, ensureVault, recordAudit, vaultExists } from "./vault.js";
+import type { VaultSearchResult } from "./vault.js";
 
 export interface JsonResult<T = unknown> {
   ok: boolean;
@@ -146,7 +147,27 @@ export async function learnMemory(input: {
   });
 }
 
-export function formatRecall(query: string, response: RecallResponse): string {
+function firstLine(text: string): string {
+  return text.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "";
+}
+
+function compactDaemonResults(results: string | unknown[] | undefined): string {
+  if (Array.isArray(results)) return JSON.stringify(results, null, 2);
+  if (!results) return "No daemon recall results.";
+  return results;
+}
+
+function formatVaultContext(results: VaultSearchResult[]): string {
+  if (results.length === 0) return "No Codex vault wiki matches.";
+  return results
+    .map((result, index) => {
+      const snippet = result.snippet.replace(/\s+/g, " ");
+      return `${index + 1}. ${result.wikilink} (vault score=${result.score})\n   ${snippet}`;
+    })
+    .join("\n");
+}
+
+export function formatRecall(query: string, response: RecallResponse, vaultResults: VaultSearchResult[] = []): string {
   const results = Array.isArray(response.results)
     ? JSON.stringify(response.results, null, 2)
     : response.results ?? "No recall results.";
@@ -157,7 +178,18 @@ export function formatRecall(query: string, response: RecallResponse): string {
   ]
     .filter(Boolean)
     .join(", ");
-  return `# Sovereign Recall\n\nQuery: ${query}\n${provenance ? `Provenance: ${provenance}\n` : ""}\n${results}`;
+  const daemonLead = firstLine(compactDaemonResults(response.results));
+  const sections = [
+    "# Sovereign Recall",
+    `Query: ${query}`,
+    provenance ? `Provenance: ${provenance}` : undefined,
+    "## AI Context Pack",
+    formatVaultContext(vaultResults),
+    daemonLead ? `Daemon lead: ${daemonLead}` : undefined,
+    "## Daemon Results",
+    results,
+  ].filter(Boolean);
+  return sections.join("\n\n");
 }
 
 export async function buildStatusReport(input?: {

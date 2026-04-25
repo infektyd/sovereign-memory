@@ -8,6 +8,7 @@ import {
   auditTail,
   ensureVault,
   recordAudit,
+  searchVaultNotes,
   vaultFirstLearn,
   writeVaultPage,
 } from "../dist/vault.js";
@@ -103,6 +104,37 @@ test("auditTail returns recent audit entries from daily logs", async () => {
     assert.equal(tail.entries.length, 1);
     assert.match(tail.text, /sovereign_status/);
     assert.match(tail.text, /status checked/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("searchVaultNotes ranks Codex wiki learnings for recall context", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sm-search-"));
+  try {
+    await vaultFirstLearn({
+      vaultPath: root,
+      title: "Codex plugin full suite marker",
+      content: "SM_SEARCH_MARKER confirms vault-first learning is visible to AI recall context packs.",
+      category: "fact",
+      source: "unit-test",
+      agentId: "codex",
+      storeResult: { ok: true },
+    });
+    await writeVaultPage({
+      vaultPath: root,
+      title: "Unrelated concept",
+      content: "This note discusses a different subject.",
+      section: "concepts",
+      source: "unit-test",
+    });
+
+    const results = await searchVaultNotes(root, "SM_SEARCH_MARKER AI recall context", 3);
+
+    assert.equal(results.length, 1);
+    assert.match(results[0].relativePath, /wiki\/sessions\/\d{8}-codex-plugin-full-suite-marker\.md$/);
+    assert.match(results[0].wikilink, /\[\[wiki\/sessions\/\d{8}-codex-plugin-full-suite-marker\]\]/);
+    assert.match(results[0].snippet, /SM_SEARCH_MARKER/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

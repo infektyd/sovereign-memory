@@ -1,4 +1,4 @@
-import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type VaultSection =
@@ -49,6 +49,15 @@ export interface VaultWriteResult {
 export interface AuditTailResult {
   entries: string[];
   text: string;
+}
+
+export interface VaultSearchResult {
+  notePath: string;
+  relativePath: string;
+  wikilink: string;
+  title: string;
+  snippet: string;
+  score: number;
 }
 
 const VAULT_DIRS = [
@@ -116,6 +125,78 @@ function sectionPath(section: VaultSection, title: string): string {
 function wikilinkFor(relativePath: string): string {
   const withoutExt = relativePath.replace(/\.md$/, "");
   return `[[${withoutExt}]]`;
+}
+
+function queryTerms(query: string): string[] {
+  const stop = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "for",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+  ]);
+  return [...new Set(query.toLowerCase().match(/[a-z0-9_/-]{3,}/g) ?? [])].filter((term) => !stop.has(term));
+}
+
+function titleFromMarkdown(relativePath: string, markdown: string): string {
+  const fmTitle = markdown.match(/^title:\s*(.+)$/m)?.[1]?.trim();
+  if (fmTitle) return fmTitle.replace(/^["']|["']$/g, "");
+  const heading = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  if (heading) return heading;
+  return path.basename(relativePath, ".md");
+}
+
+function snippetFor(markdown: string, terms: string[], maxLength = 280): string {
+  const plain = markdown
+    .replace(/^---[\s\S]*?---/m, "")
+    .replace(/^#+\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lower = plain.toLowerCase();
+  const firstHit = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? 0;
+  const start = Math.max(0, firstHit - 80);
+  const end = Math.min(plain.length, start + maxLength);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < plain.length ? "..." : "";
+  return `${prefix}${plain.slice(start, end).trim()}${suffix}`;
+}
+
+async function listMarkdownFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const full = path.join(root, entry.name);
+      if (entry.isDirectory()) return listMarkdownFiles(full);
+      if (entry.isFile() && entry.name.endsWith(".md")) return [full];
+      return [];
+    }),
+  );
+  return files.flat();
+}
+
+function scoreVaultNote(query: string, terms: string[], relativePath: string, title: string, markdown: string): number {
+  const haystack = `${title}\n${relativePath}\n${markdown}`.toLowerCase();
+  const titleLower = title.toLowerCase();
+  const queryLower = query.toLowerCase().trim();
+  let score = 0;
+  if (queryLower && haystack.includes(queryLower)) score += 50;
+  for (const term of terms) {
+    const count = haystack.split(term).length - 1;
+    if (count > 0) score += Math.min(count, 5);
+    if (titleLower.includes(term)) score += 3;
+  }
+  if (relativePath.startsWith("wiki/sessions/")) score += 1;
+  if (/sovereign_learning:\s*true/i.test(markdown)) score += 2;
+  return score;
 }
 
 function schemaContent(): string {
@@ -287,6 +368,42 @@ export async function auditTail(vaultPath: string, limit = 20): Promise<AuditTai
     .map((entry) => `## ${entry.trim()}`)
     .slice(-limit);
   return { entries, text: entries.join("\n\n") };
+}
+
+export async function searchVaultNotes(vaultPath: string, query: string, limit = 5): Promise<VaultSearchResult[]> {
+  await ensureVault(vaultPath);
+  const wikiRoot = path.join(vaultPath, "wiki");
+  const terms = queryTerms(query);
+  if (terms.length === 0) return [];
+
+  let files: string[] = [];
+  try {
+    files = await listMarkdownFiles(wikiRoot);
+  } catch {
+    return [];
+  }
+
+  const scored = await Promise.all(
+    files.map(async (notePath) => {
+      const markdown = await readFile(notePath, "utf8");
+      const relativePath = path.relative(vaultPath, notePath);
+      const title = titleFromMarkdown(relativePath, markdown);
+      const score = scoreVaultNote(query, terms, relativePath, title, markdown);
+      return {
+        notePath,
+        relativePath,
+        wikilink: wikilinkFor(relativePath),
+        title,
+        snippet: snippetFor(markdown, terms),
+        score,
+      };
+    }),
+  );
+
+  return scored
+    .filter((result) => result.score > 0)
+    .sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath))
+    .slice(0, limit);
 }
 
 export async function vaultExists(vaultPath: string): Promise<boolean> {

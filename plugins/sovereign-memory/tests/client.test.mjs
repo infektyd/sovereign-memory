@@ -18,10 +18,21 @@ test("formatRecall returns concise markdown with query and provenance", () => {
     results: "### daemon.md (score=1.000)\nUse /tmp/sovereign.sock for local health.",
     agent_id: "codex",
     layer: "knowledge",
-  });
+  }, [
+    {
+      notePath: "/tmp/vault/wiki/sessions/socket-health.md",
+      relativePath: "wiki/sessions/socket-health.md",
+      wikilink: "[[wiki/sessions/socket-health]]",
+      title: "Socket health",
+      snippet: "Codex should check /tmp/sovereign.sock before using recall.",
+      score: 61,
+    },
+  ]);
 
   assert.match(formatted, /Query: socket health/);
   assert.match(formatted, /agent=codex/);
+  assert.match(formatted, /AI Context Pack/);
+  assert.match(formatted, /\[\[wiki\/sessions\/socket-health\]\]/);
   assert.match(formatted, /Use \/tmp\/sovereign.sock/);
 });
 

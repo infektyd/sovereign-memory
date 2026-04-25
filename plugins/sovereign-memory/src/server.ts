@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
-import { auditTail, recordAudit, vaultFirstLearn, writeVaultPage } from "./vault.js";
+import { auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 function textResult(text: string) {
   return {
@@ -43,9 +43,12 @@ server.registerTool(
       workspaceId: z.string().optional(),
       agentId: z.string().optional(),
       vaultPath: z.string().optional(),
+      includeVault: z.boolean().optional(),
     },
   },
-  async ({ query, layer, limit, workspaceId, agentId, vaultPath }) => {
+  async ({ query, layer, limit, workspaceId, agentId, vaultPath, includeVault }) => {
+    const effectiveVaultPath = vaultPath ?? DEFAULT_VAULT_PATH;
+    const vaultResults = includeVault === false ? [] : await searchVaultNotes(effectiveVaultPath, query, Math.min(limit ?? 5, 8));
     const result = await recallMemory({
       query,
       layer,
@@ -53,11 +56,20 @@ server.registerTool(
       workspaceId: workspaceId ?? DEFAULT_WORKSPACE_ID,
       agentId: agentId ?? DEFAULT_AGENT_ID,
     });
-    const responseText = result.ok && result.data ? formatRecall(query, result.data) : `Recall failed: ${result.error}`;
-    await recordAudit(vaultPath ?? DEFAULT_VAULT_PATH, {
+    const responseText = result.ok && result.data ? formatRecall(query, result.data, vaultResults) : `Recall failed: ${result.error}`;
+    await recordAudit(effectiveVaultPath, {
       tool: "sovereign_recall",
       summary: query,
-      details: { ok: result.ok, layer, limit, workspaceId, agentId, error: result.error },
+      details: {
+        ok: result.ok,
+        layer,
+        limit,
+        workspaceId,
+        agentId,
+        includeVault: includeVault !== false,
+        vaultMatches: vaultResults.map((match) => match.relativePath),
+        error: result.error,
+      },
     });
     return textResult(responseText);
   },
