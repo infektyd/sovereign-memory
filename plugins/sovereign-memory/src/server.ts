@@ -4,6 +4,7 @@ import { z } from "zod";
 import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
+import { prepareTask } from "./task.js";
 import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 function textResult(text: string) {
@@ -16,6 +17,56 @@ const server = new McpServer({
   name: "sovereign-memory",
   version: "0.1.0",
 });
+
+server.registerTool(
+  "sovereign_prepare_task",
+  {
+    title: "Sovereign Prepare Task",
+    description:
+      "Build a compact Codex task packet from vault notes, daemon recall, constraints, and optional AFM distillation.",
+    inputSchema: {
+      task: z.string().min(1),
+      budgetTokens: z.number().int().min(1000).max(32000).optional(),
+      useAfm: z.boolean().optional(),
+      layer: z.enum(["identity", "episodic", "knowledge", "artifact"]).optional(),
+      limit: z.number().int().min(1).max(12).optional(),
+      workspaceId: z.string().optional(),
+      agentId: z.string().optional(),
+      vaultPath: z.string().optional(),
+      includeVault: z.boolean().optional(),
+      afmPrepareUrl: z.string().optional(),
+      afmModel: z.string().optional(),
+    },
+  },
+  async ({
+    task,
+    budgetTokens,
+    useAfm,
+    layer,
+    limit,
+    workspaceId,
+    agentId,
+    vaultPath,
+    includeVault,
+    afmPrepareUrl,
+    afmModel,
+  }) => {
+    const packet = await prepareTask({
+      task,
+      budgetTokens,
+      useAfm,
+      layer,
+      limit,
+      workspaceId,
+      agentId,
+      vaultPath,
+      includeVault,
+      afmPrepareUrl,
+      afmModel,
+    });
+    return textResult(JSON.stringify(packet, null, 2));
+  },
+);
 
 server.registerTool(
   "sovereign_status",

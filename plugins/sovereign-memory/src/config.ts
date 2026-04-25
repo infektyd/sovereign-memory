@@ -16,6 +16,12 @@ export const SOCKET_PATH =
 export const AFM_HEALTH_URL =
   process.env.SOVEREIGN_AFM_HEALTH_URL ?? "http://127.0.0.1:11437/health";
 
+export const AFM_PREPARE_TASK_URL =
+  process.env.SOVEREIGN_AFM_PREPARE_TASK_URL ?? "http://127.0.0.1:11437/v1/chat/completions";
+
+export const AFM_PREPARE_TASK_MODEL =
+  process.env.SOVEREIGN_AFM_PREPARE_TASK_MODEL ?? "apple-foundation-models";
+
 export const DEFAULT_AGENT_ID = process.env.SOVEREIGN_CODEX_AGENT_ID ?? "codex";
 
 export const DEFAULT_WORKSPACE_ID =

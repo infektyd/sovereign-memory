@@ -1,13 +1,14 @@
 import { DEFAULT_VAULT_PATH } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { statusAndAudit } from "./sovereign.js";
+import { prepareTask } from "./task.js";
 import { auditReport, auditTail, ensureVault, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
 
   if (!command || command === "help") {
-    console.log("Usage: node dist/cli.js <status|ensure-vault|audit-tail|audit-report|route|quality|learn|write> ...");
+    console.log("Usage: node dist/cli.js <status|ensure-vault|audit-tail|audit-report|route|prepare|quality|learn|write> ...");
     return;
   }
 
@@ -35,6 +36,14 @@ async function main() {
 
   if (command === "route") {
     console.log(JSON.stringify(routeMemoryIntent(args.join(" ")), null, 2));
+    return;
+  }
+
+  if (command === "prepare") {
+    const useAfm = args.includes("--afm");
+    const task = args.filter((arg) => arg !== "--afm").join(" ");
+    if (!task) throw new Error("prepare requires a task");
+    console.log(JSON.stringify(await prepareTask({ task, vaultPath: DEFAULT_VAULT_PATH, useAfm }), null, 2));
     return;
   }
 
