@@ -4,7 +4,7 @@ import { z } from "zod";
 import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
-import { prepareTask } from "./task.js";
+import { prepareOutcome, prepareTask } from "./task.js";
 import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 function textResult(text: string) {
@@ -27,6 +27,7 @@ server.registerTool(
     inputSchema: {
       task: z.string().min(1),
       budgetTokens: z.number().int().min(1000).max(32000).optional(),
+      profile: z.enum(["compact", "standard", "deep"]).optional(),
       useAfm: z.boolean().optional(),
       layer: z.enum(["identity", "episodic", "knowledge", "artifact"]).optional(),
       limit: z.number().int().min(1).max(12).optional(),
@@ -41,6 +42,7 @@ server.registerTool(
   async ({
     task,
     budgetTokens,
+    profile,
     useAfm,
     layer,
     limit,
@@ -54,6 +56,7 @@ server.registerTool(
     const packet = await prepareTask({
       task,
       budgetTokens,
+      profile,
       useAfm,
       layer,
       limit,
@@ -61,6 +64,40 @@ server.registerTool(
       agentId,
       vaultPath,
       includeVault,
+      afmPrepareUrl,
+      afmModel,
+    });
+    return textResult(JSON.stringify(packet, null, 2));
+  },
+);
+
+server.registerTool(
+  "sovereign_prepare_outcome",
+  {
+    title: "Sovereign Prepare Outcome",
+    description:
+      "Build a dry-run post-task outcome packet with learn/log/expire/do-not-store recommendations without writing memory.",
+    inputSchema: {
+      task: z.string().min(1),
+      summary: z.string().min(1),
+      changedFiles: z.array(z.string()).optional(),
+      verification: z.array(z.string()).optional(),
+      profile: z.enum(["compact", "standard", "deep"]).optional(),
+      useAfm: z.boolean().optional(),
+      vaultPath: z.string().optional(),
+      afmPrepareUrl: z.string().optional(),
+      afmModel: z.string().optional(),
+    },
+  },
+  async ({ task, summary, changedFiles, verification, profile, useAfm, vaultPath, afmPrepareUrl, afmModel }) => {
+    const packet = await prepareOutcome({
+      task,
+      summary,
+      changedFiles,
+      verification,
+      profile,
+      useAfm,
+      vaultPath,
       afmPrepareUrl,
       afmModel,
     });

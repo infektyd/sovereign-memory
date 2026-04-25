@@ -19,6 +19,8 @@ Use this skill to operate Codex's local Sovereign Memory bridge and Codex-owned 
 
 - `sovereign_route`: Classify whether a task should recall, learn, write a note, show audit, check status, or do nothing.
 - `sovereign_status`: Check daemon, AFM bridge, vault path, and recent audit state.
+- `sovereign_prepare_task`: Build a compact Codex task packet with ranked context, source reasons, privacy metadata, and optional AFM distillation.
+- `sovereign_prepare_outcome`: Build a dry-run post-task outcome packet without writing durable memory.
 - `sovereign_recall`: Search existing Sovereign Memory, prepend a Codex vault context pack, and log the lookup.
 - `sovereign_learning_quality`: Review a potential memory before writing it.
 - `sovereign_learn`: Write a Codex vault note first, quality-report it, then store the learning through Sovereign Memory.

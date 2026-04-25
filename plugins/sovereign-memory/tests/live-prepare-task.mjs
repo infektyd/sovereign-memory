@@ -6,7 +6,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { callAfmPrepareTask, prepareTask } from "../dist/task.js";
+import { callAfmPrepareTask, prepareOutcome, prepareTask } from "../dist/task.js";
 
 const AFM_URL = process.env.SOVEREIGN_AFM_PREPARE_TASK_URL ?? "http://127.0.0.1:11437/v1/chat/completions";
 const AFM_HEALTH_URL = process.env.SOVEREIGN_AFM_HEALTH_URL ?? "http://127.0.0.1:11437/health";
@@ -90,6 +90,26 @@ async function main() {
     assert.equal(cliPacket.afm.used, true, cliPacket.afm.error);
     evidence.cli = summarizePacket(cliPacket);
 
+    const outcome = await prepareOutcome({
+      task: "live low-memory outcome battery for v0 adapter",
+      summary: "Verified the prepare outcome dry-run path with tiny prompts.",
+      changedFiles: ["plugins/sovereign-memory/src/task.ts"],
+      verification: ["live AFM bridge responded"],
+      profile: "compact",
+      useAfm: true,
+      vaultPath: root,
+    });
+    assert.equal(outcome.afm.requested, true);
+    assert.equal(outcome.afm.used, true, outcome.afm.error);
+    assert.ok(outcome.outcomeDraft.learnCandidates.length > 0);
+    evidence.prepareOutcome = {
+      mode: outcome.mode,
+      afm: outcome.afm,
+      profile: outcome.profile,
+      learnCandidates: outcome.outcomeDraft.learnCandidates.length,
+      doNotStore: outcome.outcomeDraft.doNotStore.length,
+    };
+
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: ["dist/server.js"],
@@ -105,6 +125,7 @@ async function main() {
       await client.connect(transport);
       const tools = await client.listTools();
       assert.ok(tools.tools.some((tool) => tool.name === "sovereign_prepare_task"));
+      assert.ok(tools.tools.some((tool) => tool.name === "sovereign_prepare_outcome"));
       const result = await client.callTool({
         name: "sovereign_prepare_task",
         arguments: {
@@ -122,6 +143,7 @@ async function main() {
       evidence.mcp = {
         toolCount: tools.tools.length,
         hasPrepareTask: true,
+        hasPrepareOutcome: true,
         packet: summarizePacket(mcpPacket),
       };
     } finally {

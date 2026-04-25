@@ -13,17 +13,54 @@ import type { JsonResult, RecallResponse } from "./sovereign.js";
 import { recordAudit, searchVaultNotes } from "./vault.js";
 import type { VaultSearchResult } from "./vault.js";
 
+export type TaskProfile = "compact" | "standard" | "deep";
+export type SourceAuthority = "schema" | "handoff" | "decision" | "session" | "concept" | "daemon" | "vault";
+export type SourceFreshness = "fresh" | "recent" | "old" | "unknown";
+export type PrivacyLevel = "safe" | "local-only" | "private" | "blocked";
+
+export interface BudgetPolicy {
+  profile: TaskProfile;
+  tokens: number;
+  sourceLimit: number;
+  snippetLength: number;
+  afmSourceLimit: number;
+  afmSnippetLength: number;
+  afmMaxTokens: number;
+}
+
+export interface SourceScoreBreakdown {
+  lexical: number;
+  authority: number;
+  freshness: number;
+  privacy: number;
+  total: number;
+}
+
 export interface TaskSource {
   title: string;
   wikilink: string;
   relativePath: string;
   snippet: string;
   score: number;
+  authority?: SourceAuthority;
+  freshness?: SourceFreshness;
+  privacyLevel?: PrivacyLevel;
+  reasons?: string[];
+  scoreBreakdown?: SourceScoreBreakdown;
+}
+
+export interface OutcomeDraft {
+  learnCandidates: string[];
+  logOnly: string[];
+  expires: string[];
+  doNotStore: string[];
 }
 
 export interface PreparedTaskPacket {
   task: string;
   budgetTokens: number;
+  profile: TaskProfile;
+  budget: BudgetPolicy;
   mode: "deterministic" | "afm";
   intent: string;
   brief: string;
@@ -43,11 +80,13 @@ export interface PreparedTaskPacket {
     url?: string;
     error?: string;
   };
+  outcomeDraft?: OutcomeDraft;
   contextMarkdown: string;
 }
 
 export interface PrepareTaskInput {
   task: string;
+  profile?: TaskProfile;
   budgetTokens?: number;
   useAfm?: boolean;
   layer?: "identity" | "episodic" | "knowledge" | "artifact";
@@ -60,6 +99,36 @@ export interface PrepareTaskInput {
   afmModel?: string;
 }
 
+export interface PrepareOutcomeInput {
+  task: string;
+  summary: string;
+  changedFiles?: string[];
+  verification?: string[];
+  profile?: TaskProfile;
+  useAfm?: boolean;
+  vaultPath?: string;
+  afmPrepareUrl?: string;
+  afmModel?: string;
+}
+
+export interface PreparedOutcomePacket {
+  task: string;
+  summary: string;
+  profile: TaskProfile;
+  budget: BudgetPolicy;
+  mode: "deterministic" | "afm";
+  changedFiles: string[];
+  verification: string[];
+  outcomeDraft: OutcomeDraft;
+  afm: {
+    requested: boolean;
+    used: boolean;
+    url?: string;
+    error?: string;
+  };
+  contextMarkdown: string;
+}
+
 export interface PrepareTaskDeps {
   searchVault?: typeof searchVaultNotes;
   recall?: typeof recallMemory;
@@ -67,9 +136,55 @@ export interface PrepareTaskDeps {
   audit?: typeof recordAudit;
 }
 
-function clampBudgetTokens(value: number | undefined): number {
-  if (!Number.isFinite(value ?? NaN)) return 4000;
+export interface PrepareOutcomeDeps {
+  afmPrepare?: (url: string, payload: Record<string, unknown>) => Promise<JsonResult<Partial<PreparedOutcomePacket>>>;
+}
+
+const PROFILE_POLICIES: Record<TaskProfile, BudgetPolicy> = {
+  compact: {
+    profile: "compact",
+    tokens: 1500,
+    sourceLimit: 3,
+    snippetLength: 160,
+    afmSourceLimit: 2,
+    afmSnippetLength: 120,
+    afmMaxTokens: 140,
+  },
+  standard: {
+    profile: "standard",
+    tokens: 4000,
+    sourceLimit: 6,
+    snippetLength: 280,
+    afmSourceLimit: 4,
+    afmSnippetLength: 220,
+    afmMaxTokens: 220,
+  },
+  deep: {
+    profile: "deep",
+    tokens: 12000,
+    sourceLimit: 10,
+    snippetLength: 520,
+    afmSourceLimit: 6,
+    afmSnippetLength: 320,
+    afmMaxTokens: 420,
+  },
+};
+
+function resolveProfile(profile: TaskProfile | undefined): TaskProfile {
+  return profile && profile in PROFILE_POLICIES ? profile : "standard";
+}
+
+function clampBudgetTokens(value: number | undefined, profile: TaskProfile): number {
+  if (!Number.isFinite(value ?? NaN)) return PROFILE_POLICIES[profile].tokens;
   return Math.max(1000, Math.min(32000, Math.trunc(value ?? 4000)));
+}
+
+function resolveBudget(profileInput: TaskProfile | undefined, budgetTokens: number | undefined): BudgetPolicy {
+  const profile = resolveProfile(profileInput);
+  return {
+    ...PROFILE_POLICIES[profile],
+    tokens: clampBudgetTokens(budgetTokens, profile),
+  };
 }
 
 function classifyIntent(task: string): string {
@@ -101,6 +216,100 @@ function constraintsForTask(task: string): string[] {
   return constraints;
 }
 
+function authorityForSource(result: VaultSearchResult): SourceAuthority {
+  const path = result.relativePath.toLowerCase();
+  const title = result.title.toLowerCase();
+  if (path.includes("schema/agents") || title.includes("agents.md") || title.includes("operating rules")) return "schema";
+  if (path.includes("handoff") || title.includes("handoff")) return "handoff";
+  if (path.startsWith("wiki/decisions/") || title.includes("decision")) return "decision";
+  if (path.startsWith("wiki/sessions/")) return "session";
+  if (path.startsWith("wiki/concepts/")) return "concept";
+  return "vault";
+}
+
+function dateFromSource(result: VaultSearchResult): Date | undefined {
+  const raw = `${result.relativePath} ${result.title}`.match(/\b(20\d{2})[-/]?([01]\d)[-/]?([0-3]\d)\b/);
+  if (!raw) return undefined;
+  const date = new Date(`${raw[1]}-${raw[2]}-${raw[3]}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function freshnessForSource(result: VaultSearchResult): { freshness: SourceFreshness; points: number; reason?: string } {
+  const date = dateFromSource(result);
+  if (!date) return { freshness: "unknown", points: 0 };
+  const ageDays = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86_400_000));
+  if (ageDays <= 30) return { freshness: "fresh", points: 24, reason: "fresh note" };
+  if (ageDays <= 180) return { freshness: "recent", points: 10, reason: "recent note" };
+  return { freshness: "old", points: -8, reason: "older note" };
+}
+
+function privacyForSource(result: VaultSearchResult): { privacyLevel: PrivacyLevel; points: number; reason?: string } {
+  const text = `${result.relativePath}\n${result.title}\n${result.snippet}`.toLowerCase();
+  if (/\b(api[_ -]?key|private key|password|secret|token)\b/.test(text)) {
+    return { privacyLevel: "blocked", points: -1000, reason: "blocked sensitive content" };
+  }
+  if (/raw\/|\/logs?\/|\.db\b|sqlite|\.fmadapter|launchd|plist/.test(text)) {
+    return { privacyLevel: "blocked", points: -1000, reason: "blocked local artifact" };
+  }
+  if (/private|raw session|session content/.test(text)) {
+    return { privacyLevel: "private", points: -20, reason: "private source" };
+  }
+  if (/local runtime|local-only|\/users\/|\/volumes\/|adapter|afm bridge/.test(text)) {
+    return { privacyLevel: "local-only", points: -4, reason: "local-only source" };
+  }
+  return { privacyLevel: "safe", points: 0, reason: "safe source" };
+}
+
+function authorityPoints(authority: SourceAuthority): number {
+  if (authority === "schema") return 60;
+  if (authority === "handoff") return 42;
+  if (authority === "decision") return 30;
+  if (authority === "session") return 10;
+  if (authority === "concept") return 6;
+  return 0;
+}
+
+function enhancedSourceFromVault(result: VaultSearchResult, budget: BudgetPolicy): TaskSource | undefined {
+  const authority = authorityForSource(result);
+  const freshness = freshnessForSource(result);
+  const privacy = privacyForSource(result);
+  if (privacy.privacyLevel === "blocked") return undefined;
+  const authorityScore = authorityPoints(authority);
+  const reasons = ["lexical match"];
+  if (authority === "schema") reasons.push("hard constraint");
+  if (authority === "handoff") reasons.push(freshness.freshness === "fresh" ? "fresh handoff" : "handoff");
+  if (authority === "decision") reasons.push("prior decision");
+  if (freshness.reason && freshness.freshness !== "old") reasons.push(freshness.reason);
+  if (privacy.reason && privacy.privacyLevel !== "safe") reasons.push(privacy.reason);
+  const total = result.score + authorityScore + freshness.points + privacy.points;
+  return {
+    title: result.title,
+    wikilink: result.wikilink,
+    relativePath: result.relativePath,
+    snippet: result.snippet.replace(/\s+/g, " ").slice(0, budget.snippetLength),
+    score: total,
+    authority,
+    freshness: freshness.freshness,
+    privacyLevel: privacy.privacyLevel,
+    reasons,
+    scoreBreakdown: {
+      lexical: result.score,
+      authority: authorityScore,
+      freshness: freshness.points,
+      privacy: privacy.points,
+      total,
+    },
+  };
+}
+
+function taskSourcesFromVault(results: VaultSearchResult[], budget: BudgetPolicy): TaskSource[] {
+  return results
+    .map((result) => enhancedSourceFromVault(result, budget))
+    .filter((source): source is TaskSource => Boolean(source))
+    .sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath))
+    .slice(0, budget.sourceLimit);
+}
+
 function sourceFromVault(result: VaultSearchResult): TaskSource {
   return {
     title: result.title,
@@ -113,6 +322,7 @@ function sourceFromVault(result: VaultSearchResult): TaskSource {
 
 function deterministicPacket(input: {
   task: string;
+  budget: BudgetPolicy;
   budgetTokens: number;
   vaultResults: VaultSearchResult[];
   recallResult: JsonResult<RecallResponse>;
@@ -121,7 +331,7 @@ function deterministicPacket(input: {
   afmError?: string;
 }): PreparedTaskPacket {
   const intent = classifyIntent(input.task);
-  const relevantSources = input.vaultResults.map(sourceFromVault);
+  const relevantSources = taskSourcesFromVault(input.vaultResults, input.budget);
   const daemonLead = input.recallResult.ok ? firstLine(input.recallResult.data?.results) : undefined;
   const constraints = constraintsForTask(input.task);
   const currentState = [
@@ -159,7 +369,12 @@ function deterministicPacket(input: {
     "## Relevant Sources",
     relevantSources.length === 0
       ? "- None"
-      : relevantSources.map((source) => `- ${source.wikilink} (score=${source.score}) ${source.snippet}`).join("\n"),
+      : relevantSources
+          .map(
+            (source) =>
+              `- ${source.wikilink} (score=${source.score}; ${source.reasons?.join(", ") ?? "included"}) ${source.snippet}`,
+          )
+          .join("\n"),
     "## Recommended Next Actions",
     recommendedNextActions.map((item) => `- ${item}`).join("\n"),
     "## Risks",
@@ -169,6 +384,8 @@ function deterministicPacket(input: {
   return {
     task: input.task,
     budgetTokens: input.budgetTokens,
+    profile: input.budget.profile,
+    budget: input.budget,
     mode: "deterministic",
     intent,
     brief,
@@ -198,6 +415,8 @@ function mergeAfmPacket(base: PreparedTaskPacket, afmData: Partial<PreparedTaskP
     ...afmData,
     task: base.task,
     budgetTokens: base.budgetTokens,
+    profile: base.profile,
+    budget: base.budget,
     mode: "afm" as const,
     intent: afmData.intent ?? base.intent,
     constraints: afmData.constraints ?? base.constraints,
@@ -263,43 +482,91 @@ function normalizeAfmResponse(data: unknown): Partial<PreparedTaskPacket> {
       normalized.recommendedNextActions = partial.recommendedNextActions.filter((item) => typeof item === "string");
     }
     if (Array.isArray(partial.risks)) normalized.risks = partial.risks.filter((item) => typeof item === "string");
+    if (partial.outcomeDraft && typeof partial.outcomeDraft === "object") {
+      const draft = partial.outcomeDraft as Partial<OutcomeDraft>;
+      normalized.outcomeDraft = {
+        learnCandidates: Array.isArray(draft.learnCandidates) ? draft.learnCandidates.filter((item) => typeof item === "string") : [],
+        logOnly: Array.isArray(draft.logOnly) ? draft.logOnly.filter((item) => typeof item === "string") : [],
+        expires: Array.isArray(draft.expires) ? draft.expires.filter((item) => typeof item === "string") : [],
+        doNotStore: Array.isArray(draft.doNotStore) ? draft.doNotStore.filter((item) => typeof item === "string") : [],
+      };
+    }
     if (Object.keys(normalized).length > 0) return normalized;
   }
   if (chatContent?.trim()) return { brief: chatContent.trim() };
   return {};
 }
 
-function buildAfmChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
+function sourceAllowedForAfm(source: unknown): source is TaskSource {
+  if (!source || typeof source !== "object") return false;
+  const privacyLevel = (source as { privacyLevel?: unknown }).privacyLevel;
+  return privacyLevel === undefined || privacyLevel === "safe";
+}
+
+export function buildAfmChatPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const profile = resolveProfile(payload.profile as TaskProfile | undefined);
+  const budget = resolveBudget(profile, typeof payload.budgetTokens === "number" ? payload.budgetTokens : undefined);
+  const purpose = payload.purpose === "outcome" ? "outcome" : "task";
+  const redactLocal = (value: unknown, maxLength: number): string =>
+    String(value ?? "")
+      .replace(/\/Users\/[^\s"',)]+/g, "[local-path]")
+      .replace(/\/Volumes\/[^\s"',)]+/g, "[local-path]")
+      .slice(0, maxLength);
   const sourceLines = Array.isArray(payload.relevantSources)
     ? payload.relevantSources
-        .slice(0, 4)
+        .filter(sourceAllowedForAfm)
+        .slice(0, budget.afmSourceLimit)
         .map((source) => {
-          if (!source || typeof source !== "object") return "";
-          const item = source as { wikilink?: unknown; snippet?: unknown; score?: unknown };
-          return `${String(item.wikilink ?? "source")} score=${String(item.score ?? "?")}: ${String(item.snippet ?? "").slice(0, 220)}`;
+          const item = source as { wikilink?: unknown; snippet?: unknown; score?: unknown; reasons?: unknown };
+          const reasons = Array.isArray(item.reasons) ? item.reasons.filter((reason) => typeof reason === "string").join(", ") : "";
+          return `${String(item.wikilink ?? "source")} score=${String(item.score ?? "?")} reasons=${reasons}: ${String(
+            item.snippet ?? "",
+          ).slice(0, budget.afmSnippetLength)}`;
         })
         .filter(Boolean)
     : [];
+  const content =
+    purpose === "outcome"
+      ? [
+          "Return compact JSON only for Codex outcome prep.",
+          "Keys: outcomeDraft with learnCandidates, logOnly, expires, doNotStore.",
+          "No secrets, no raw private logs, no local absolute paths.",
+          `Task: ${redactLocal(payload.task, 500)}`,
+          `Summary: ${redactLocal(payload.summary, 700)}`,
+          `Profile: ${profile}`,
+          `Changed files: ${
+            Array.isArray(payload.changedFiles)
+              ? payload.changedFiles.map((item) => redactLocal(item, 160)).slice(0, budget.afmSourceLimit).join(" | ")
+              : ""
+          }`,
+          `Verification: ${
+            Array.isArray(payload.verification)
+              ? payload.verification.map((item) => redactLocal(item, 180)).slice(0, budget.afmSourceLimit).join(" | ")
+              : ""
+          }`,
+          `Existing draft: ${redactLocal(JSON.stringify(payload.outcomeDraft ?? {}), 1200)}`,
+        ].join("\n")
+      : [
+          "Return compact JSON only for Codex task prep.",
+          "Keys: brief, recommendedNextActions, risks.",
+          "No secrets, no raw private logs.",
+          `Task: ${String(payload.task ?? "").slice(0, 500)}`,
+          `Intent: ${String(payload.intent ?? "work")}`,
+          `Profile: ${profile}`,
+          `Budget: ${String(payload.budgetTokens ?? 4000)} tokens`,
+          `Constraints: ${Array.isArray(payload.constraints) ? payload.constraints.join(" | ").slice(0, 700) : ""}`,
+          `State: ${Array.isArray(payload.currentState) ? payload.currentState.join(" | ").slice(0, 700) : ""}`,
+          `Sources: ${sourceLines.join(" || ").slice(0, 1200)}`,
+          `Daemon: ${String(payload.daemonLead ?? "").slice(0, 400)}`,
+        ].join("\n");
   return {
     model: typeof payload.model === "string" ? payload.model : AFM_PREPARE_TASK_MODEL,
     temperature: 0,
-    max_tokens: 220,
+    max_tokens: budget.afmMaxTokens,
     messages: [
       {
         role: "user",
-        content:
-          [
-            "Return compact JSON only for Codex task prep.",
-            "Keys: brief, recommendedNextActions, risks.",
-            "No secrets, no raw private logs.",
-            `Task: ${String(payload.task ?? "").slice(0, 500)}`,
-            `Intent: ${String(payload.intent ?? "work")}`,
-            `Budget: ${String(payload.budgetTokens ?? 4000)} tokens`,
-            `Constraints: ${Array.isArray(payload.constraints) ? payload.constraints.join(" | ").slice(0, 700) : ""}`,
-            `State: ${Array.isArray(payload.currentState) ? payload.currentState.join(" | ").slice(0, 700) : ""}`,
-            `Sources: ${sourceLines.join(" || ").slice(0, 1200)}`,
-            `Daemon: ${String(payload.daemonLead ?? "").slice(0, 400)}`,
-          ].join("\n"),
+        content,
       },
     ],
   };
@@ -356,8 +623,9 @@ export async function prepareTask(input: PrepareTaskInput, deps: PrepareTaskDeps
   const vaultPath = input.vaultPath ?? DEFAULT_VAULT_PATH;
   const agentId = input.agentId ?? DEFAULT_AGENT_ID;
   const workspaceId = input.workspaceId ?? DEFAULT_WORKSPACE_ID;
-  const limit = Math.max(1, Math.min(input.limit ?? 6, 12));
-  const budgetTokens = clampBudgetTokens(input.budgetTokens);
+  const budget = resolveBudget(input.profile, input.budgetTokens);
+  const limit = Math.max(1, Math.min(input.limit ?? budget.sourceLimit * 2, 12));
+  const budgetTokens = budget.tokens;
   const afmUrl = input.afmPrepareUrl ?? AFM_PREPARE_TASK_URL;
   const search = deps.searchVault ?? searchVaultNotes;
   const recall = deps.recall ?? recallMemory;
@@ -377,6 +645,7 @@ export async function prepareTask(input: PrepareTaskInput, deps: PrepareTaskDeps
 
   let packet = deterministicPacket({
     task: input.task,
+    budget,
     budgetTokens,
     vaultResults,
     recallResult,
@@ -388,6 +657,7 @@ export async function prepareTask(input: PrepareTaskInput, deps: PrepareTaskDeps
     const afmResult = await afmPrepare(afmUrl, {
       task: input.task,
       budgetTokens,
+      profile: budget.profile,
       intent: packet.intent,
       constraints: packet.constraints,
       currentState: packet.currentState,
@@ -408,12 +678,109 @@ export async function prepareTask(input: PrepareTaskInput, deps: PrepareTaskDeps
     details: {
       mode: packet.mode,
       intent: packet.intent,
+      profile: packet.profile,
       budgetTokens,
       vaultMatches: packet.relevantSources.map((source) => source.relativePath),
       daemonOk: packet.recall.daemonOk,
       afm: packet.afm,
     },
   });
+
+  return packet;
+}
+
+function outcomeDraft(input: PrepareOutcomeInput): OutcomeDraft {
+  const verification = input.verification ?? [];
+  const changedFiles = input.changedFiles ?? [];
+  const learnCandidates = [
+    `${input.task}: ${input.summary}`.replace(/\s+/g, " ").slice(0, 500),
+  ];
+  const logOnly = [
+    ...verification.map((item) => `Verification: ${item}`),
+    changedFiles.length > 0 ? `Changed files: ${changedFiles.join(", ")}` : "",
+  ].filter(Boolean);
+  return {
+    learnCandidates,
+    logOnly,
+    expires: ["Implementation-specific status should be refreshed after the next backend pass."],
+    doNotStore: [
+      "Do not store raw logs, raw sessions, local DB contents, adapter files, launchd plists, secrets, or machine-local paths.",
+    ],
+  };
+}
+
+function outcomeContextMarkdown(packet: PreparedOutcomePacket): string {
+  return [
+    "# Sovereign Outcome Packet",
+    `Task: ${packet.task}`,
+    `Profile: ${packet.profile}`,
+    "## Summary",
+    packet.summary,
+    "## Learn Candidates",
+    packet.outcomeDraft.learnCandidates.map((item) => `- ${item}`).join("\n"),
+    "## Log Only",
+    packet.outcomeDraft.logOnly.length === 0 ? "- None" : packet.outcomeDraft.logOnly.map((item) => `- ${item}`).join("\n"),
+    "## Expires",
+    packet.outcomeDraft.expires.map((item) => `- ${item}`).join("\n"),
+    "## Do Not Store",
+    packet.outcomeDraft.doNotStore.map((item) => `- ${item}`).join("\n"),
+  ].join("\n\n");
+}
+
+export async function prepareOutcome(
+  input: PrepareOutcomeInput,
+  deps: PrepareOutcomeDeps = {},
+): Promise<PreparedOutcomePacket> {
+  const budget = resolveBudget(input.profile, undefined);
+  const afmUrl = input.afmPrepareUrl ?? AFM_PREPARE_TASK_URL;
+  const afmPrepare = deps.afmPrepare ?? callAfmPrepareTask;
+  let packet: PreparedOutcomePacket = {
+    task: input.task,
+    summary: input.summary,
+    profile: budget.profile,
+    budget,
+    mode: "deterministic",
+    changedFiles: input.changedFiles ?? [],
+    verification: input.verification ?? [],
+    outcomeDraft: outcomeDraft(input),
+    afm: {
+      requested: input.useAfm === true,
+      used: false,
+      url: afmUrl,
+    },
+    contextMarkdown: "",
+  };
+  packet.contextMarkdown = outcomeContextMarkdown(packet);
+
+  if (input.useAfm === true) {
+    const afmResult = await afmPrepare(afmUrl, {
+      task: input.task,
+      summary: input.summary,
+      purpose: "outcome",
+      changedFiles: packet.changedFiles.slice(0, budget.afmSourceLimit),
+      verification: packet.verification.slice(0, budget.afmSourceLimit),
+      outcomeDraft: packet.outcomeDraft,
+      profile: budget.profile,
+      budgetTokens: budget.tokens,
+      model: input.afmModel ?? AFM_PREPARE_TASK_MODEL,
+    });
+    if (afmResult.ok && afmResult.data) {
+      const data = afmResult.data as Partial<PreparedOutcomePacket>;
+      packet = {
+        ...packet,
+        mode: "afm",
+        outcomeDraft: data.outcomeDraft ?? packet.outcomeDraft,
+        afm: {
+          ...packet.afm,
+          used: true,
+          error: undefined,
+        },
+      };
+      packet.contextMarkdown = outcomeContextMarkdown(packet);
+    } else {
+      packet.afm.error = afmResult.error ?? "AFM prepare_outcome returned no data.";
+    }
+  }
 
   return packet;
 }
