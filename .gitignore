@@ -57,9 +57,21 @@ credentials/
 *.pem
 *.key
 .mcp.json
+!plugins/sovereign-memory/.mcp.json
 
 # ── Test / coverage ──────────────────────────────
 .pytest_cache/
 .coverage
 htmlcov/
 .mypy_cache/
+
+# ── Codex plugin local/private state ─────────────
+*.sqlite
+*.sqlite3
+*.fmadapter
+codex-vault/raw/
+codex-vault/logs/
+codex-vault/**/*.canvas
+plugins/*/node_modules/
+plugins/*/dist/
+plugins/*/.env

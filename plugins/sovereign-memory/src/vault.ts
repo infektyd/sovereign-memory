@@ -1,0 +1,299 @@
+import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+export type VaultSection =
+  | "raw"
+  | "entities"
+  | "concepts"
+  | "decisions"
+  | "syntheses"
+  | "sessions";
+
+export interface EnsureVaultResult {
+  vaultPath: string;
+  created: string[];
+}
+
+export interface AuditEntry {
+  tool: string;
+  summary: string;
+  details?: Record<string, unknown>;
+  timestamp?: Date;
+}
+
+export interface WriteVaultPageInput {
+  vaultPath: string;
+  title: string;
+  content: string;
+  section: VaultSection;
+  source?: string;
+  frontmatter?: Record<string, string | number | boolean | undefined>;
+}
+
+export interface LearnInput {
+  vaultPath: string;
+  title: string;
+  content: string;
+  category?: string;
+  source?: string;
+  agentId?: string;
+  storeResult?: Record<string, unknown>;
+}
+
+export interface VaultWriteResult {
+  notePath: string;
+  relativePath: string;
+  wikilink: string;
+}
+
+export interface AuditTailResult {
+  entries: string[];
+  text: string;
+}
+
+const VAULT_DIRS = [
+  "raw",
+  "wiki",
+  "wiki/entities",
+  "wiki/concepts",
+  "wiki/decisions",
+  "wiki/syntheses",
+  "wiki/sessions",
+  "schema",
+  "logs",
+  ".obsidian",
+];
+
+function isoDate(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function compactDate(date = new Date()): string {
+  return isoDate(date).replaceAll("-", "");
+}
+
+function slugify(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[\s_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "untitled";
+}
+
+function yamlValue(value: string | number | boolean | undefined): string {
+  if (value === undefined) return "";
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (/^[A-Za-z0-9_.:/@ -]+$/.test(value)) return value;
+  return JSON.stringify(value);
+}
+
+function frontmatter(data: Record<string, string | number | boolean | undefined>): string {
+  const lines = Object.entries(data)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}: ${yamlValue(value)}`);
+  return `---\n${lines.join("\n")}\n---\n`;
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sectionPath(section: VaultSection, title: string): string {
+  const slug = slugify(title);
+  if (section === "raw") return path.join("raw", `${compactDate()}-${slug}.md`);
+  if (section === "sessions") return path.join("wiki", "sessions", `${compactDate()}-${slug}.md`);
+  return path.join("wiki", section, `${slug}.md`);
+}
+
+function wikilinkFor(relativePath: string): string {
+  const withoutExt = relativePath.replace(/\.md$/, "");
+  return `[[${withoutExt}]]`;
+}
+
+function schemaContent(): string {
+  return `# Codex Sovereign Memory Vault
+
+This vault is Codex's local-first LLM wiki for Sovereign Memory.
+
+## Operating Rules
+
+- Treat \`raw/\` as immutable raw sources. Do not edit raw source notes after writing them; create a new note if the source changes.
+- Treat \`wiki/\` as Codex-maintained synthesis. Keep pages short, sourced, and linked with Obsidian wikilinks.
+- Prefer durable facts, decisions, procedures, and user preferences over full chat transcripts.
+- Default automatic behavior is recall-only. Do not write learnings unless the user explicitly asks or a tool call is explicitly manual.
+- Keep private session content, adapter files, launchd plists, datasets, and generated DB state out of public git.
+- Update \`index.md\` and append to \`log.md\` whenever Codex creates or learns from a note.
+
+## Layout
+
+- \`raw/\`: raw sources and session excerpts.
+- \`wiki/entities/\`: people, projects, repos, services, machines, and named systems.
+- \`wiki/concepts/\`: reusable ideas and patterns.
+- \`wiki/decisions/\`: decisions with rationale.
+- \`wiki/syntheses/\`: cross-source summaries and comparisons.
+- \`wiki/sessions/\`: task/session learnings written as durable notes.
+- \`logs/\`: daily audit entries for tool transparency.
+`;
+}
+
+function indexContent(): string {
+  return `# Codex Sovereign Memory Index
+
+This index is maintained by the Sovereign Memory Codex plugin.
+
+## Recent Pages
+
+`;
+}
+
+function logContent(): string {
+  return `# Sovereign Memory Codex Log
+
+Append-only audit of Codex memory operations.
+
+`;
+}
+
+export async function ensureVault(vaultPath: string): Promise<EnsureVaultResult> {
+  const created: string[] = [];
+  await mkdir(vaultPath, { recursive: true });
+  for (const dir of VAULT_DIRS) {
+    const full = path.join(vaultPath, dir);
+    await mkdir(full, { recursive: true });
+    created.push(full);
+  }
+
+  const schemaPath = path.join(vaultPath, "schema", "AGENTS.md");
+  if (!(await exists(schemaPath))) {
+    await writeFile(schemaPath, schemaContent(), "utf8");
+  }
+
+  const indexPath = path.join(vaultPath, "index.md");
+  if (!(await exists(indexPath))) {
+    await writeFile(indexPath, indexContent(), "utf8");
+  }
+
+  const logPath = path.join(vaultPath, "log.md");
+  if (!(await exists(logPath))) {
+    await writeFile(logPath, logContent(), "utf8");
+  }
+
+  return { vaultPath, created };
+}
+
+export async function recordAudit(vaultPath: string, entry: AuditEntry): Promise<string> {
+  await ensureVault(vaultPath);
+  const timestamp = entry.timestamp ?? new Date();
+  const date = isoDate(timestamp);
+  const line = `## [${timestamp.toISOString()}] ${entry.tool} | ${entry.summary}\n\n${
+    entry.details ? `\`\`\`json\n${JSON.stringify(entry.details, null, 2)}\n\`\`\`\n\n` : ""
+  }`;
+  await appendFile(path.join(vaultPath, "log.md"), line, "utf8");
+  const dailyPath = path.join(vaultPath, "logs", `${date}.md`);
+  if (!(await exists(dailyPath))) {
+    await writeFile(dailyPath, `# ${date} Sovereign Memory Audit\n\n`, "utf8");
+  }
+  await appendFile(dailyPath, line, "utf8");
+  return dailyPath;
+}
+
+async function appendIndex(vaultPath: string, title: string, relativePath: string, summary: string): Promise<void> {
+  await ensureVault(vaultPath);
+  const indexPath = path.join(vaultPath, "index.md");
+  const existing = await readFile(indexPath, "utf8");
+  const link = wikilinkFor(relativePath);
+  if (existing.includes(link)) return;
+  const line = `- ${link} - ${summary.replace(/\s+/g, " ").slice(0, 160)}\n`;
+  await appendFile(indexPath, line, "utf8");
+}
+
+export async function writeVaultPage(input: WriteVaultPageInput): Promise<VaultWriteResult> {
+  await ensureVault(input.vaultPath);
+  const relativePath = sectionPath(input.section, input.title);
+  const notePath = path.join(input.vaultPath, relativePath);
+  await mkdir(path.dirname(notePath), { recursive: true });
+
+  const fm = frontmatter({
+    title: input.title,
+    source: input.source,
+    created: new Date().toISOString(),
+    section: input.section,
+    immutable: input.section === "raw" ? true : undefined,
+    ...input.frontmatter,
+  });
+  const body = `${fm}\n# ${input.title}\n\n${input.content.trim()}\n`;
+  await writeFile(notePath, body, "utf8");
+
+  await appendIndex(input.vaultPath, input.title, relativePath, input.content);
+  await recordAudit(input.vaultPath, {
+    tool: "sovereign_vault_write",
+    summary: input.title,
+    details: { notePath, section: input.section, source: input.source },
+  });
+
+  return { notePath, relativePath, wikilink: wikilinkFor(relativePath) };
+}
+
+export async function vaultFirstLearn(input: LearnInput): Promise<VaultWriteResult> {
+  const result = await writeVaultPage({
+    vaultPath: input.vaultPath,
+    title: input.title,
+    content: input.content,
+    section: "sessions",
+    source: input.source,
+    frontmatter: {
+      agent: input.agentId ?? "codex",
+      category: input.category ?? "general",
+      sovereign_learning: true,
+    },
+  });
+
+  await recordAudit(input.vaultPath, {
+    tool: "sovereign_learn",
+    summary: input.title,
+    details: {
+      notePath: result.notePath,
+      category: input.category ?? "general",
+      source: input.source,
+      storeResult: input.storeResult,
+    },
+  });
+
+  return result;
+}
+
+export async function auditTail(vaultPath: string, limit = 20): Promise<AuditTailResult> {
+  await ensureVault(vaultPath);
+  const todayPath = path.join(vaultPath, "logs", `${isoDate()}.md`);
+  const fallbackPath = path.join(vaultPath, "log.md");
+  const target = (await exists(todayPath)) ? todayPath : fallbackPath;
+  let text = "";
+  try {
+    text = await readFile(target, "utf8");
+  } catch {
+    return { entries: [], text: "" };
+  }
+  const entries = text
+    .split(/^## /m)
+    .filter((entry) => entry.trim().length > 0 && !entry.startsWith("#"))
+    .map((entry) => `## ${entry.trim()}`)
+    .slice(-limit);
+  return { entries, text: entries.join("\n\n") };
+}
+
+export async function vaultExists(vaultPath: string): Promise<boolean> {
+  try {
+    const st = await stat(vaultPath);
+    return st.isDirectory();
+  } catch {
+    return false;
+  }
+}
