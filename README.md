@@ -154,12 +154,25 @@ sovereign-memory decay
 # Export knowledge graph as JSON
 sovereign-memory graph --agent hermes
 
+# Extract memory candidates through a local model bridge
+sovereign-memory extract ./session.md
+sovereign-memory extract ./session.md --learn-agent hermes --durable-only
+
 # Start file watcher for live re-indexing
 sovereign-memory watch
 
 # Show database stats
 sovereign-memory stats
 ```
+
+## Integrations
+
+The optional OpenClaw bridge lives in
+`integrations/openclaw-extension/`. It exposes Sovereign Memory through a local
+Unix-socket daemon and a TypeScript memory manager. See
+`docs/runtime-integration.md` for the repository boundary between the packaged
+core, OpenClaw integration code, and local model services such as an Apple
+Foundation Models bridge.
 
 ## Key Concepts
 
@@ -187,6 +200,15 @@ A configurable decay function (7-day half-life by default) reduces the relevance
 
 Beyond static knowledge, agents can log events, track tasks (start/complete with duration), and maintain conversation threads. Threads auto-bind to semantically related documents. This gives agents temporal awareness — not just what they know, but what they've done.
 
+### Local Extraction
+
+The `sovereign_memory.extraction` module turns long text or session exports into
+structured memory candidates using a local OpenAI-compatible chat endpoint. It
+defaults to `http://127.0.0.1:11437/v1/chat/completions`, which matches a local
+Apple Foundation Models bridge, and can be pointed elsewhere with
+`SOVEREIGN_EXTRACTOR_URL` and `SOVEREIGN_EXTRACTOR_MODEL`. The CLI can print the
+extractions or store durable entries directly as agent learnings.
+
 ## Configuration
 
 All settings are in `SovereignConfig` with sensible defaults. Override via env vars or pass a custom config:
@@ -210,7 +232,7 @@ agent = SovereignAgent("hermes", config=config)
 ## Development
 
 ```bash
-git clone https://github.com/Infektyd/sovereign-memory.git
+git clone https://github.com/infektyd/sovereign-memory.git
 cd sovereign-memory
 python -m venv venv
 source venv/bin/activate

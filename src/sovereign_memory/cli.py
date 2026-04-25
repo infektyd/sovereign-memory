@@ -12,6 +12,7 @@ Usage:
     sovereign-memory learnings <query>           # Search learnings
     sovereign-memory decay                       # Run memory decay pass
     sovereign-memory graph                       # Export knowledge graph
+    sovereign-memory extract <path>              # Extract memories with a local model bridge
     sovereign-memory watch                       # Start file watcher
     sovereign-memory stats                       # Show system stats
 """
@@ -92,6 +93,41 @@ def cmd_graph(args, config, db):
     exporter = GraphExporter(db, config)
     path = exporter.export_to_file(agent_filter=args.agent)
     print(f"Exported: {path}")
+
+
+def cmd_extract(args, config, db):
+    """Extract memory candidates from a text file with a local model bridge."""
+    from sovereign_memory.agents.agent_api import SovereignAgent
+    from sovereign_memory.extraction import MemoryExtractor
+
+    extractor = MemoryExtractor()
+    result = extractor.extract_file(args.path)
+
+    stored = []
+    if args.learn_agent:
+        agent = SovereignAgent(args.learn_agent, config=config, db=db)
+        try:
+            for memory in result.memories:
+                if args.durable_only and memory.durability != "durable":
+                    continue
+                learning_id = agent.learn(
+                    memory.claim,
+                    category=memory.category,
+                    confidence=memory.confidence,
+                    source_query=f"extracted from {args.path}",
+                )
+                stored.append({
+                    "learning_id": learning_id,
+                    "claim": memory.claim,
+                    "category": memory.category,
+                })
+        finally:
+            agent.close()
+
+    output = result.as_dict()
+    if stored:
+        output["stored"] = stored
+    print(json.dumps(output, indent=2))
 
 
 def cmd_watch(args, config, db):
@@ -195,6 +231,19 @@ def main():
     graph_parser = subparsers.add_parser("graph", help="Export knowledge graph")
     graph_parser.add_argument("--agent", help="Filter by agent")
 
+    # Extract
+    extract_parser = subparsers.add_parser("extract", help="Extract memory candidates from a text file")
+    extract_parser.add_argument("path", help="Text or markdown file to extract from")
+    extract_parser.add_argument(
+        "--learn-agent",
+        help="If set, store extracted durable memories as learnings for this agent",
+    )
+    extract_parser.add_argument(
+        "--durable-only",
+        action="store_true",
+        help="When writing learnings, skip extracted entries marked ephemeral",
+    )
+
     # Watch
     subparsers.add_parser("watch", help="Start file watcher")
 
@@ -223,6 +272,7 @@ def main():
         "learnings": cmd_learnings,
         "decay": cmd_decay,
         "graph": cmd_graph,
+        "extract": cmd_extract,
         "watch": cmd_watch,
         "stats": cmd_stats,
     }
