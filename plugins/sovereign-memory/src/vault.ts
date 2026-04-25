@@ -51,6 +51,13 @@ export interface AuditTailResult {
   text: string;
 }
 
+export interface AuditReport {
+  entries: number;
+  tools: Record<string, number>;
+  recentSummaries: string[];
+  latest?: string;
+}
+
 export interface VaultSearchResult {
   notePath: string;
   relativePath: string;
@@ -368,6 +375,26 @@ export async function auditTail(vaultPath: string, limit = 20): Promise<AuditTai
     .map((entry) => `## ${entry.trim()}`)
     .slice(-limit);
   return { entries, text: entries.join("\n\n") };
+}
+
+export async function auditReport(vaultPath: string, limit = 100): Promise<AuditReport> {
+  const tail = await auditTail(vaultPath, limit);
+  const tools: Record<string, number> = {};
+  const recentSummaries: string[] = [];
+  for (const entry of tail.entries) {
+    const header = entry.match(/^## \[[^\]]+\]\s+([^|]+)\|\s+(.+)$/m);
+    if (!header) continue;
+    const tool = header[1].trim();
+    const summary = header[2].trim();
+    tools[tool] = (tools[tool] ?? 0) + 1;
+    recentSummaries.push(`${tool}: ${summary}`);
+  }
+  return {
+    entries: tail.entries.length,
+    tools,
+    recentSummaries: recentSummaries.slice(-10),
+    latest: tail.entries.at(-1),
+  };
 }
 
 export async function searchVaultNotes(vaultPath: string, query: string, limit = 5): Promise<VaultSearchResult[]> {

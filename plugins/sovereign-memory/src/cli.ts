@@ -1,12 +1,13 @@
 import { DEFAULT_VAULT_PATH } from "./config.js";
+import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { statusAndAudit } from "./sovereign.js";
-import { auditTail, ensureVault, vaultFirstLearn, writeVaultPage } from "./vault.js";
+import { auditReport, auditTail, ensureVault, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
 
   if (!command || command === "help") {
-    console.log("Usage: node dist/cli.js <status|ensure-vault|audit-tail|learn|write> ...");
+    console.log("Usage: node dist/cli.js <status|ensure-vault|audit-tail|audit-report|route|quality|learn|write> ...");
     return;
   }
 
@@ -23,6 +24,24 @@ async function main() {
   if (command === "audit-tail") {
     const limit = Number(args[0] ?? "20");
     console.log((await auditTail(DEFAULT_VAULT_PATH, limit)).text);
+    return;
+  }
+
+  if (command === "audit-report") {
+    const limit = Number(args[0] ?? "100");
+    console.log(JSON.stringify(await auditReport(DEFAULT_VAULT_PATH, limit), null, 2));
+    return;
+  }
+
+  if (command === "route") {
+    console.log(JSON.stringify(routeMemoryIntent(args.join(" ")), null, 2));
+    return;
+  }
+
+  if (command === "quality") {
+    const [title, ...contentParts] = args;
+    if (!title || contentParts.length === 0) throw new Error("quality requires title and content");
+    console.log(JSON.stringify(assessLearningQuality({ title, content: contentParts.join(" ") }), null, 2));
     return;
   }
 

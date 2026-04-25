@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   auditTail,
+  auditReport,
   ensureVault,
   recordAudit,
   searchVaultNotes,
@@ -104,6 +105,35 @@ test("auditTail returns recent audit entries from daily logs", async () => {
     assert.equal(tail.entries.length, 1);
     assert.match(tail.text, /sovereign_status/);
     assert.match(tail.text, /status checked/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("auditReport summarizes recent tool activity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sm-audit-report-"));
+  try {
+    await ensureVault(root);
+    await recordAudit(root, {
+      tool: "sovereign_recall",
+      summary: "recall checked",
+      details: { ok: true },
+    });
+    await recordAudit(root, {
+      tool: "sovereign_learning_quality",
+      summary: "quality checked",
+      details: { ok: true },
+    });
+
+    const report = await auditReport(root, 10);
+
+    assert.equal(report.entries, 2);
+    assert.equal(report.tools.sovereign_recall, 1);
+    assert.equal(report.tools.sovereign_learning_quality, 1);
+    assert.deepEqual(report.recentSummaries, [
+      "sovereign_recall: recall checked",
+      "sovereign_learning_quality: quality checked",
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

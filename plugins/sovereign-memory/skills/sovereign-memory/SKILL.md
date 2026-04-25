@@ -17,15 +17,18 @@ Use this skill to operate Codex's local Sovereign Memory bridge and Codex-owned 
 
 ## Manual Tools
 
+- `sovereign_route`: Classify whether a task should recall, learn, write a note, show audit, check status, or do nothing.
 - `sovereign_status`: Check daemon, AFM bridge, vault path, and recent audit state.
-- `sovereign_recall`: Search existing Sovereign Memory and log the lookup.
-- `sovereign_learn`: Write a Codex vault note first, then store the learning through Sovereign Memory.
+- `sovereign_recall`: Search existing Sovereign Memory, prepend a Codex vault context pack, and log the lookup.
+- `sovereign_learning_quality`: Review a potential memory before writing it.
+- `sovereign_learn`: Write a Codex vault note first, quality-report it, then store the learning through Sovereign Memory.
 - `sovereign_vault_write`: Write a structured Obsidian note without durable learning.
+- `sovereign_audit_report`: Summarize recent memory tool activity.
 - `sovereign_audit_tail`: Show recent memory audit entries.
 
 ## Vault Rules
 
-Codex's vault defaults to `~/.sovereign-memory/codex-vault`, or `SOVEREIGN_CODEX_VAULT_PATH` when set.
+Codex's vault defaults to `~/.sovereign-memory/codex-vault`, or to `SOVEREIGN_CODEX_VAULT_PATH` when set.
 
 - `raw/` is immutable raw sources.
 - `wiki/` is Codex-maintained synthesis.

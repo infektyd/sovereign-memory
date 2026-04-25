@@ -2,8 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
+import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
-import { auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
+import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 
 function textResult(text: string) {
   return {
@@ -28,6 +29,27 @@ server.registerTool(
   async ({ vaultPath }) => {
     const report = await statusAndAudit(vaultPath ?? DEFAULT_VAULT_PATH);
     return textResult(JSON.stringify(report, null, 2));
+  },
+);
+
+server.registerTool(
+  "sovereign_route",
+  {
+    title: "Sovereign Memory Intent Router",
+    description: "Classify whether a task should recall, learn, write a vault note, show audit, or do nothing.",
+    inputSchema: {
+      task: z.string().min(1),
+      vaultPath: z.string().optional(),
+    },
+  },
+  async ({ task, vaultPath }) => {
+    const intent = routeMemoryIntent(task);
+    await recordAudit(vaultPath ?? DEFAULT_VAULT_PATH, {
+      tool: "sovereign_route",
+      summary: `${intent.action}: ${task.slice(0, 120)}`,
+      details: intent as unknown as Record<string, unknown>,
+    });
+    return textResult(JSON.stringify(intent, null, 2));
   },
 );
 
@@ -88,9 +110,28 @@ server.registerTool(
       agentId: z.string().optional(),
       workspaceId: z.string().optional(),
       vaultPath: z.string().optional(),
+      requireQuality: z.boolean().optional(),
     },
   },
-  async ({ title, content, category, source, agentId, workspaceId, vaultPath }) => {
+  async ({ title, content, category, source, agentId, workspaceId, vaultPath, requireQuality }) => {
+    const quality = assessLearningQuality({ title, content, category, source });
+    if (requireQuality === true && !quality.ok) {
+      await recordAudit(vaultPath ?? DEFAULT_VAULT_PATH, {
+        tool: "sovereign_learn",
+        summary: `quality-blocked: ${title}`,
+        details: { quality },
+      });
+      return textResult(
+        JSON.stringify(
+          {
+            status: "quality-blocked",
+            quality,
+          },
+          null,
+          2,
+        ),
+      );
+    }
     const store = await learnMemory({
       content,
       category,
@@ -110,6 +151,7 @@ server.registerTool(
       JSON.stringify(
         {
           status: store.ok ? "learned" : "vault-written-memory-store-failed",
+          quality,
           note,
           store,
         },
@@ -117,6 +159,30 @@ server.registerTool(
         2,
       ),
     );
+  },
+);
+
+server.registerTool(
+  "sovereign_learning_quality",
+  {
+    title: "Sovereign Learning Quality",
+    description: "Review a potential memory before writing it to the Codex vault or Sovereign daemon.",
+    inputSchema: {
+      title: z.string().min(1),
+      content: z.string().min(1),
+      category: z.string().optional(),
+      source: z.string().optional(),
+      vaultPath: z.string().optional(),
+    },
+  },
+  async ({ title, content, category, source, vaultPath }) => {
+    const quality = assessLearningQuality({ title, content, category, source });
+    await recordAudit(vaultPath ?? DEFAULT_VAULT_PATH, {
+      tool: "sovereign_learning_quality",
+      summary: title,
+      details: { quality },
+    });
+    return textResult(JSON.stringify(quality, null, 2));
   },
 );
 
@@ -142,6 +208,22 @@ server.registerTool(
       source,
     });
     return textResult(JSON.stringify({ status: "written", note }, null, 2));
+  },
+);
+
+server.registerTool(
+  "sovereign_audit_report",
+  {
+    title: "Sovereign Audit Report",
+    description: "Summarize recent Sovereign Memory tool activity for transparent self-auditing.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(200).optional(),
+      vaultPath: z.string().optional(),
+    },
+  },
+  async ({ limit, vaultPath }) => {
+    const report = await auditReport(vaultPath ?? DEFAULT_VAULT_PATH, limit ?? 100);
+    return textResult(JSON.stringify(report, null, 2));
   },
 );
 
