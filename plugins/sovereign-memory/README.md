@@ -2,7 +2,7 @@
 
 Local-first Codex plugin for Sovereign Memory. It exposes recall, AI-facing vault context packs, manual vault-first learning, learning quality checks, structured Obsidian note writes, and audit tools through MCP.
 
-The optional static frontend lives in `frontend/`. Open `frontend/index.html` in a browser to inspect `sovereign_prepare_task` and `sovereign_prepare_outcome` packets without running a server.
+The optional frontend lives in `frontend/`. Run `npm run console` to start the local-only bridge at `http://127.0.0.1:8765/` and generate real `sovereign_prepare_task` and `sovereign_prepare_outcome` packets from the same backend functions used by MCP/CLI. Opening `frontend/index.html` directly still works as a static packet inspector fallback.
 
 ## Runtime Defaults
 
@@ -34,11 +34,28 @@ export SOVEREIGN_AFM_PREPARE_TASK_URL=http://127.0.0.1:11437/v1/chat/completions
 
 Automatic behavior should remain recall-only. `sovereign_route` can recommend recall/status/audit automatically, but learning and vault writes stay manual and vault-first. `sovereign_learn` returns a quality report and can block weak memories with `requireQuality`.
 
+## Local Console
+
+```bash
+npm run console
+```
+
+The console exposes only local HTTP endpoints:
+
+- `GET /api/health`
+- `GET /api/status`
+- `GET /api/audit-tail?limit=20`
+- `POST /api/prepare-task`
+- `POST /api/prepare-outcome`
+
+The server binds to `127.0.0.1`, refuses non-local bind hosts, rejects non-local host/origin/fetch-metadata requests, requires JSON POST bodies, caps JSON request bodies, redacts machine-local paths in browser-facing status/audit responses, and does not expose learn or vault-write endpoints. Browser requests cannot override the server-owned vault path or AFM target. `prepare-task` keeps its existing audit behavior; `prepare-outcome` remains dry-run only.
+
 ## Development
 
 ```bash
 npm install
 npm test
+npm run console
 npm run design:lint
 npm run test:live:prepare
 ```

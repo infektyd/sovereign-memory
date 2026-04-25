@@ -32,6 +32,8 @@ body {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -218,6 +220,10 @@ p {
   color: var(--color-secondary);
 }
 
+.status-strip.compact {
+  align-items: center;
+}
+
 .badge.safe {
   background: #dbece5;
   border-color: #a8d0c0;
@@ -290,6 +296,69 @@ textarea {
   line-height: 1.45;
 }
 
+.small-textarea {
+  min-height: 88px;
+}
+
+.markdown-box {
+  margin-top: var(--space-md);
+}
+
+.markdown-box textarea {
+  min-height: 180px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: var(--color-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+input,
+select {
+  min-height: 38px;
+  border: 1px solid var(--color-surface-muted);
+  border-radius: var(--radius-md);
+  padding: 0 10px;
+  color: var(--color-primary);
+  background: #fbfaf7;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.7fr;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: var(--space-md);
+}
+
+.toggle-row label,
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+}
+
 .button-row {
   display: flex;
   gap: var(--space-sm);
@@ -309,6 +378,11 @@ textarea {
 .primary-button {
   background: var(--color-tertiary);
   color: #fff;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 
 .secondary-button,
@@ -454,6 +528,32 @@ li + li {
   background: #fbfaf7;
 }
 
+.audit-text {
+  min-height: 360px;
+  max-height: 62vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--color-surface-muted);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  background: #fbfaf7;
+  color: var(--color-primary);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-sm);
+}
+
+.runtime-grid .metric strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .swatch {
   height: 56px;
   border-radius: var(--radius-sm);
@@ -472,7 +572,9 @@ li + li {
 
   .topbar,
   .tool-grid,
-  .outcome-columns {
+  .outcome-columns,
+  .form-grid,
+  .form-grid.two {
     grid-template-columns: 1fr;
     display: grid;
   }

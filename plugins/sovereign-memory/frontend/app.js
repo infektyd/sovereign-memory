@@ -32,26 +32,19 @@ const samplePrepare = {
       privacyLevel: "safe",
       reasons: ["lexical match", "fresh handoff", "fresh note"],
     },
-    {
-      title: "AFM runtime note",
-      wikilink: "[[wiki/sessions/local-afm-runtime]]",
-      relativePath: "wiki/sessions/local-afm-runtime.md",
-      snippet: "AFM bridge is local-only and should not receive private raw session material.",
-      score: 42,
-      authority: "session",
-      freshness: "fresh",
-      privacyLevel: "local-only",
-      reasons: ["lexical match", "local-only source"],
-    },
   ],
+  recall: { daemonOk: true },
   afm: { requested: true, used: true, url: "http://127.0.0.1:11437/v1/chat/completions" },
+  contextMarkdown: "# Sovereign Task Packet\n\nSample packet.",
 };
 
 const sampleOutcome = {
   task: "Ship frontend console",
-  summary: "Added a static packet inspector backed by DESIGN.md tokens.",
+  summary: "Added a local packet console backed by DESIGN.md tokens.",
   profile: "compact",
   mode: "deterministic",
+  changedFiles: ["plugins/sovereign-memory/frontend/app.js"],
+  verification: ["npm test passed", "DESIGN.md lint passed"],
   outcomeDraft: {
     learnCandidates: ["Sovereign Memory frontend should mirror DESIGN.md tokens and avoid automatic learning."],
     logOnly: ["npm test passed", "DESIGN.md lint passed"],
@@ -59,7 +52,10 @@ const sampleOutcome = {
     doNotStore: ["Do not store raw logs, vault raw material, DBs, or adapter paths."],
   },
   afm: { requested: false, used: false },
+  contextMarkdown: "# Sovereign Outcome Packet\n\nSample outcome.",
 };
+
+let bridgeOnline = false;
 
 function $(selector) {
   return document.querySelector(selector);
@@ -69,12 +65,75 @@ function setJson(target, value) {
   target.value = JSON.stringify(value, null, 2);
 }
 
+function parseLines(value) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 function parseJson(textarea) {
   try {
     return JSON.parse(textarea.value);
   } catch (error) {
     alert(`Invalid JSON: ${error.message}`);
     return null;
+  }
+}
+
+async function getJson(path) {
+  const response = await fetch(path, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function postJson(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`);
+  return payload;
+}
+
+function setBridgeState(online, label) {
+  bridgeOnline = online;
+  $("#bridgeState").textContent = online ? "live bridge" : "static fallback";
+  $("#bridgeState").className = online ? "badge safe" : "badge warn";
+  $("#railStatusText").textContent = label;
+}
+
+function renderStatus(status) {
+  $("#socketState").textContent = status.socket?.ok ? "socket ok" : "socket offline";
+  $("#afmState").textContent = status.afm?.ok ? "AFM-ready" : "AFM offline";
+  $("#auditCount").textContent = String(status.audit?.entries ?? 0);
+  $("#vaultPath").textContent = status.vault?.path ?? "unknown vault";
+}
+
+async function refreshStatus() {
+  try {
+    await getJson("/api/health");
+    const status = await getJson("/api/status");
+    setBridgeState(true, "Local bridge is connected. No automatic learning from this UI.");
+    renderStatus(status);
+  } catch {
+    setBridgeState(false, "Open through `npm run console` to generate live packets.");
+    renderStatus({ socket: { ok: false }, afm: { ok: false }, audit: { entries: 0 }, vault: { path: "static file mode" } });
+  }
+}
+
+async function refreshAudit() {
+  if (!bridgeOnline) {
+    $("#auditText").textContent = "Audit tail is available when the local bridge is running.";
+    return;
+  }
+  try {
+    const tail = await getJson("/api/audit-tail?limit=20");
+    $("#auditText").textContent = tail.text || "No audit entries yet.";
+  } catch (error) {
+    $("#auditText").textContent = error.message;
   }
 }
 
@@ -87,13 +146,14 @@ function renderPrepare(packet) {
   const budget = Number(packet.budgetTokens ?? 4000);
   $("#budgetFill").style.width = `${Math.max(12, Math.min(100, (budget / 12000) * 100))}%`;
   $("#constraintsList").innerHTML = (packet.constraints ?? []).map((item) => `<div>${escapeHtml(item)}</div>`).join("");
+  $("#contextMarkdown").value = packet.contextMarkdown ?? "";
 
   const sources = packet.relevantSources ?? [];
   const safeCount = sources.filter((source) => source.privacyLevel === "safe").length;
   $("#safeSourceSummary").textContent = `${safeCount} safe`;
   $("#sourceTable").innerHTML =
     sources.length === 0
-      ? `<div class="source-row"><strong>No sources</strong><small>Paste a packet with relevantSources.</small></div>`
+      ? `<div class="source-row empty"><strong>No sources</strong><small>Generate or paste a packet with relevantSources.</small></div>`
       : sources.map(renderSource).join("");
 }
 
@@ -115,8 +175,12 @@ function renderSource(source) {
 
 function renderOutcome(packet) {
   const draft = packet.outcomeDraft ?? {};
+  $("#outcomeMode").textContent = packet.mode ?? "deterministic";
   $("#learnCandidates").innerHTML = listItems(draft.learnCandidates);
+  $("#logOnly").innerHTML = listItems(draft.logOnly);
+  $("#expires").innerHTML = listItems(draft.expires);
   $("#doNotStore").innerHTML = listItems(draft.doNotStore);
+  $("#outcomeMarkdown").value = packet.contextMarkdown ?? "";
 }
 
 function renderTokens() {
@@ -145,13 +209,50 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function preparePayload() {
+  return {
+    task: $("#taskInput").value,
+    profile: $("#profileInput").value,
+    budgetTokens: Number($("#budgetInput").value) || undefined,
+    limit: Number($("#limitInput").value) || undefined,
+    useAfm: $("#useAfmInput").checked,
+    includeVault: $("#includeVaultInput").checked,
+  };
+}
+
+function outcomePayload() {
+  return {
+    task: $("#outcomeTaskInput").value,
+    summary: $("#summaryInput").value,
+    profile: $("#outcomeProfileInput").value,
+    useAfm: $("#outcomeUseAfmInput").checked,
+    changedFiles: parseLines($("#changedFilesInput").value),
+    verification: parseLines($("#verificationInput").value),
+  };
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
     document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
     button.classList.add("active");
     $(`#${button.dataset.view}-view`).classList.add("active");
+    if (button.dataset.view === "audit") void refreshAudit();
   });
+});
+
+$("#generatePrepare").addEventListener("click", async () => {
+  try {
+    $("#generatePrepare").disabled = true;
+    const packet = await postJson("/api/prepare-task", preparePayload());
+    setJson($("#packetInput"), packet);
+    renderPrepare(packet);
+    await refreshStatus();
+  } catch (error) {
+    alert(`Prepare failed: ${error.message}`);
+  } finally {
+    $("#generatePrepare").disabled = false;
+  }
 });
 
 $("#loadPrepare").addEventListener("click", () => {
@@ -166,6 +267,20 @@ $("#analyzePrepare").addEventListener("click", () => {
 
 $("#clearInput").addEventListener("click", () => {
   $("#packetInput").value = "";
+  $("#contextMarkdown").value = "";
+});
+
+$("#generateOutcome").addEventListener("click", async () => {
+  try {
+    $("#generateOutcome").disabled = true;
+    const packet = await postJson("/api/prepare-outcome", outcomePayload());
+    setJson($("#outcomeInput"), packet);
+    renderOutcome(packet);
+  } catch (error) {
+    alert(`Outcome failed: ${error.message}`);
+  } finally {
+    $("#generateOutcome").disabled = false;
+  }
 });
 
 $("#loadOutcome").addEventListener("click", () => {
@@ -178,8 +293,12 @@ $("#analyzeOutcome").addEventListener("click", () => {
   if (packet) renderOutcome(packet);
 });
 
+$("#refreshStatus").addEventListener("click", refreshStatus);
+$("#refreshAudit").addEventListener("click", refreshAudit);
+
 setJson($("#packetInput"), samplePrepare);
 setJson($("#outcomeInput"), sampleOutcome);
 renderPrepare(samplePrepare);
 renderOutcome(sampleOutcome);
 renderTokens();
+await refreshStatus();

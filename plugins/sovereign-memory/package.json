@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test tests/*.test.mjs",
+    "console": "npm run build && node dist/ui-server.js",
     "design:lint": "npx @google/design.md lint ../../DESIGN.md",
     "test:live:prepare": "npm run build && node tests/live-prepare-task.mjs",
     "smoke:status": "npm run build && node dist/cli.js status"

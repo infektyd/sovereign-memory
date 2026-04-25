@@ -22,13 +22,17 @@
           </div>
         </div>
         <nav class="nav-list">
-          <button class="nav-item active" data-view="prepare" title="Inspect prepare-task packets">
+          <button class="nav-item active" data-view="prepare" title="Generate and inspect task packets">
             <span class="nav-icon">◇</span>
             Prepare
           </button>
           <button class="nav-item" data-view="outcome" title="Review dry-run outcome packets">
             <span class="nav-icon">□</span>
             Outcome
+          </button>
+          <button class="nav-item" data-view="audit" title="Read recent audit entries">
+            <span class="nav-icon">≡</span>
+            Audit
           </button>
           <button class="nav-item" data-view="design" title="View design system tokens">
             <span class="nav-icon">▣</span>
@@ -37,7 +41,7 @@
         </nav>
         <div class="rail-note">
           <span class="status-dot"></span>
-          Local-first. No automatic learning from this UI.
+          <span id="railStatusText">Checking local bridge...</span>
         </div>
       </aside>
 
@@ -45,11 +49,13 @@
         <header class="topbar">
           <div>
             <p class="eyebrow">Codex plugin dashboard</p>
-            <h1>Context packets you can inspect before an agent acts.</h1>
+            <h1>Context packets you can generate, inspect, and audit before an agent acts.</h1>
           </div>
           <div class="status-strip" aria-label="Runtime evidence">
+            <span id="bridgeState" class="badge warn">checking bridge</span>
             <span><b id="toolCount">10</b> MCP tools</span>
-            <span><b id="afmState">AFM-ready</b></span>
+            <span><b id="socketState">socket unknown</b></span>
+            <span><b id="afmState">AFM unknown</b></span>
             <span><b id="profileState">standard</b> profile</span>
           </div>
         </header>
@@ -59,16 +65,43 @@
             <section class="panel input-panel">
               <div class="panel-header">
                 <div>
-                  <h2>Packet Input</h2>
-                  <p>Paste a `sovereign_prepare_task` JSON packet or load the sample.</p>
+                  <h2>Generate Task Packet</h2>
+                  <p>Calls the local `sovereign_prepare_task` bridge when served through `npm run console`.</p>
                 </div>
                 <button class="icon-button" id="loadPrepare" title="Load sample prepare packet">↻</button>
               </div>
-              <textarea id="packetInput" spellcheck="false"></textarea>
+              <label>
+                <span>Task</span>
+                <textarea id="taskInput" class="small-textarea" spellcheck="false">Wire the Sovereign Memory frontend to real local prepare/outcome endpoints without automatic learning.</textarea>
+              </label>
+              <div class="form-grid">
+                <label>
+                  <span>Profile</span>
+                  <select id="profileInput">
+                    <option value="compact">compact</option>
+                    <option value="standard" selected>standard</option>
+                    <option value="deep">deep</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Budget</span>
+                  <input id="budgetInput" type="number" min="1000" max="32000" step="500" value="4000" />
+                </label>
+                <label>
+                  <span>Limit</span>
+                  <input id="limitInput" type="number" min="1" max="12" value="6" />
+                </label>
+              </div>
+              <div class="toggle-row">
+                <label><input id="includeVaultInput" type="checkbox" checked /> Include vault context</label>
+                <label><input id="useAfmInput" type="checkbox" /> Use local AFM bridge</label>
+              </div>
               <div class="button-row">
-                <button class="primary-button" id="analyzePrepare">Analyze Packet</button>
+                <button class="primary-button" id="generatePrepare">Generate Packet</button>
+                <button class="secondary-button" id="analyzePrepare">Analyze JSON</button>
                 <button class="secondary-button" id="clearInput">Clear</button>
               </div>
+              <textarea id="packetInput" spellcheck="false"></textarea>
             </section>
 
             <section class="panel">
@@ -97,6 +130,10 @@
                 <span id="budgetFill"></span>
               </div>
               <div class="compact-list" id="constraintsList"></div>
+              <label class="markdown-box">
+                <span>Context Markdown</span>
+                <textarea id="contextMarkdown" spellcheck="false"></textarea>
+              </label>
             </section>
           </div>
 
@@ -117,23 +154,55 @@
             <section class="panel input-panel">
               <div class="panel-header">
                 <div>
-                  <h2>Outcome Input</h2>
-                  <p>Paste a `sovereign_prepare_outcome` JSON packet.</p>
+                  <h2>Generate Outcome Packet</h2>
+                  <p>Dry-run learning recommendations only; this path never calls `sovereign_learn`.</p>
                 </div>
                 <button class="icon-button" id="loadOutcome" title="Load sample outcome packet">↻</button>
               </div>
-              <textarea id="outcomeInput" spellcheck="false"></textarea>
-              <div class="button-row">
-                <button class="primary-button" id="analyzeOutcome">Review Outcome</button>
+              <label>
+                <span>Task</span>
+                <input id="outcomeTaskInput" value="Ship the Sovereign Memory console wiring" />
+              </label>
+              <label>
+                <span>Summary</span>
+                <textarea id="summaryInput" class="small-textarea" spellcheck="false">Added local-only HTTP endpoints and connected the frontend to generate real packets.</textarea>
+              </label>
+              <div class="form-grid two">
+                <label>
+                  <span>Profile</span>
+                  <select id="outcomeProfileInput">
+                    <option value="compact" selected>compact</option>
+                    <option value="standard">standard</option>
+                    <option value="deep">deep</option>
+                  </select>
+                </label>
+                <label class="checkbox-label"><input id="outcomeUseAfmInput" type="checkbox" /> Use local AFM bridge</label>
               </div>
+              <div class="form-grid two">
+                <label>
+                  <span>Changed files</span>
+                  <textarea id="changedFilesInput" class="small-textarea" spellcheck="false">plugins/sovereign-memory/src/ui-server.ts
+plugins/sovereign-memory/frontend/app.js</textarea>
+                </label>
+                <label>
+                  <span>Verification</span>
+                  <textarea id="verificationInput" class="small-textarea" spellcheck="false">npm test
+npm run design:lint</textarea>
+                </label>
+              </div>
+              <div class="button-row">
+                <button class="primary-button" id="generateOutcome">Generate Outcome</button>
+                <button class="secondary-button" id="analyzeOutcome">Review JSON</button>
+              </div>
+              <textarea id="outcomeInput" spellcheck="false"></textarea>
             </section>
             <section class="panel">
               <div class="panel-header">
                 <div>
                   <h2>Dry-Run Review</h2>
-                  <p>Nothing here writes durable memory.</p>
+                  <p>Learning candidates, log-only facts, expiry notes, and storage exclusions.</p>
                 </div>
-                <span class="badge warn">manual learn only</span>
+                <span class="badge warn" id="outcomeMode">manual learn only</span>
               </div>
               <div class="outcome-columns">
                 <div>
@@ -141,12 +210,55 @@
                   <ul id="learnCandidates"></ul>
                 </div>
                 <div>
+                  <h3>Log only</h3>
+                  <ul id="logOnly"></ul>
+                </div>
+                <div>
+                  <h3>Expires</h3>
+                  <ul id="expires"></ul>
+                </div>
+                <div>
                   <h3>Do not store</h3>
                   <ul id="doNotStore"></ul>
                 </div>
               </div>
+              <label class="markdown-box">
+                <span>Outcome Markdown</span>
+                <textarea id="outcomeMarkdown" spellcheck="false"></textarea>
+              </label>
             </section>
           </div>
+        </section>
+
+        <section class="view" id="audit-view">
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>Audit Tail</h2>
+                <p>Recent transparent memory operations from the Codex vault.</p>
+              </div>
+              <div class="status-strip compact">
+                <span><b id="auditCount">0</b> entries</span>
+                <button class="secondary-button" id="refreshAudit">Refresh</button>
+              </div>
+            </div>
+            <pre id="auditText" class="audit-text">Audit tail is loading...</pre>
+          </section>
+          <section class="panel full-width">
+            <div class="panel-header">
+              <div>
+                <h2>Runtime</h2>
+                <p>Local bridge status and vault target.</p>
+              </div>
+              <button class="secondary-button" id="refreshStatus">Refresh</button>
+            </div>
+            <div class="runtime-grid">
+              <div class="metric">
+                <span>Vault</span>
+                <strong id="vaultPath">checking...</strong>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section class="view" id="design-view">
