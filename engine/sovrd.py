@@ -19,7 +19,10 @@ Features
 
 JSON-RPC Methods
 ----------------
-* ``search(query, agent_id?, limit?)``  — Hybrid FAISS + FTS5 search.
+* ``search(query, agent_id?, limit?, depth?, budget_tokens?)`` — Hybrid FAISS + FTS5 search.
+  depth: headline | snippet (default) | chunk | document — progressive disclosure tiers.
+  budget_tokens: if set, applies MMR-diverse token-budget packing.
+* ``expand(result_id, depth?)``          — Re-fetch a result at a deeper depth tier.
 * ``read(agent_id?, limit?)``            — Agent startup context (recall).
 * ``learn(content, agent_id?, category?)`` — Write a learning (dual-write).
 * ``log_event(event_type, content, agent_id?)`` — Episodic event.
@@ -168,7 +171,18 @@ def _handle_ping(params: dict, request_id: Any) -> dict:
 
 
 def _handle_search(params: dict, request_id: Any) -> dict:
-    """Search Sovereign Memory via hybrid retrieval."""
+    """Search Sovereign Memory via hybrid retrieval.
+
+    Accepts optional ``depth`` parameter for progressive disclosure:
+      headline  — wikilink, title, score, confidence, age_days (~30 tokens/result)
+      snippet   — + text (≤280 chars) (~120 tokens/result) [DEFAULT]
+      chunk     — + full chunk text, heading context, provenance (~500 tokens)
+      document  — + full source document (whole_document=1 rows only)
+
+    Accepts optional ``budget_tokens`` for MMR-diverse token-budgeted packing.
+    When provided, selects a diverse subset fitting within the token budget.
+    ``depth="auto"`` with ``budget_tokens`` uses "snippet" as the base tier.
+    """
     global _request_count
     _request_count += 1
 
@@ -178,27 +192,77 @@ def _handle_search(params: dict, request_id: Any) -> dict:
 
     agent_id = params.get("agent_id", "main")
     limit = min(int(params.get("limit", 5)), 20)
+    depth = str(params.get("depth", "snippet"))
+    budget_tokens_param = params.get("budget_tokens")
+
+    # depth="auto" means "pick snippet and apply MMR budget packing"
+    if depth == "auto":
+        depth = "snippet"
 
     try:
         engine = _lazy_retrieval()
-        results = engine.retrieve(query=query, agent_id=agent_id, limit=limit)
-        formatted = []
-        for r in results:
-            formatted.append({
-                "text": r.get("chunk_text", ""),
-                "source": r.get("filename", ""),
-                "heading": r.get("heading_context", ""),
-                "score": round(r.get("score", 0), 4),
-            })
+        results = engine.retrieve(
+            query=query,
+            agent_id=agent_id,
+            limit=limit,
+            depth=depth,
+        )
+
+        # Apply MMR token-budget packing if requested
+        if budget_tokens_param is not None:
+            try:
+                budget = int(budget_tokens_param)
+                from tokens import pack_results
+                results = pack_results(results, budget_tokens=budget, depth=depth)
+            except Exception as pack_exc:
+                logger.warning("pack_results failed: %s — returning unbudgeted results", pack_exc)
+
         return _make_response({
             "query": query,
             "agent_id": agent_id,
-            "count": len(formatted),
-            "results": formatted,
+            "depth": depth,
+            "count": len(results),
+            "results": results,
         }, request_id)
     except Exception as exc:
         logger.exception("search failed")
         return _make_error(-32000, f"Search error: {exc}", request_id)
+
+
+def _handle_expand(params: dict, request_id: Any) -> dict:
+    """Re-fetch a specific result at a deeper depth tier.
+
+    Accepts:
+      result_id  — chunk_id or doc_id from a prior search result (required)
+      depth      — target depth tier: 'chunk' or 'document' (default: 'chunk')
+    """
+    global _request_count
+    _request_count += 1
+
+    result_id = params.get("result_id")
+    if result_id is None:
+        return _make_error(-32602, "result_id is required", request_id)
+
+    try:
+        result_id = int(result_id)
+    except (TypeError, ValueError):
+        return _make_error(-32602, "result_id must be an integer", request_id)
+
+    depth = str(params.get("depth", "chunk"))
+
+    try:
+        engine = _lazy_retrieval()
+        result = engine.expand_result(result_id=result_id, depth=depth)
+        if result is None:
+            return _make_error(-32000, f"No result found for result_id={result_id}", request_id)
+        return _make_response({
+            "result_id": result_id,
+            "depth": depth,
+            "result": result,
+        }, request_id)
+    except Exception as exc:
+        logger.exception("expand failed")
+        return _make_error(-32000, f"Expand error: {exc}", request_id)
 
 
 def _handle_read(params: dict, request_id: Any) -> dict:
@@ -407,6 +471,7 @@ def _handle_status(params: dict, request_id: Any) -> dict:
 _METHODS: Dict[str, callable] = {
     "ping":       _handle_ping,
     "search":     _handle_search,
+    "expand":     _handle_expand,
     "read":       _handle_read,
     "learn":      _handle_learn,
     "log_event":  _handle_log_event,
