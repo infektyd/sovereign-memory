@@ -377,8 +377,8 @@ class TestExplain:
 
 class TestMigration002:
 
-    def test_migration_002_bumps_user_version_to_2(self, tmp_path):
-        """After migrations, user_version == 2."""
+    def test_migration_002_bumps_user_version_to_current_target(self, tmp_path):
+        """After migrations, user_version matches the highest known migration."""
         from migrations import run_migrations
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -399,7 +399,7 @@ class TestMigration002:
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 2, f"Expected user_version=2, got {version}"
+        assert version == 3, f"Expected user_version=3, got {version}"
 
     def test_score_distribution_table_exists(self, tmp_path):
         """Migration 002 creates score_distribution table."""

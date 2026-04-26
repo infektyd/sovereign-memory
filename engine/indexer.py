@@ -206,6 +206,7 @@ class VaultIndexer:
 
         # Phase 3: Rebuild FAISS index from all embeddings
         self._rebuild_faiss_index()
+        self._sync_vector_backends()
 
         return {"status": "success", **stats}
 
@@ -227,6 +228,31 @@ class VaultIndexer:
             self.faiss_index.build_from_vectors(chunk_ids, all_vecs)
             logger.info("FAISS index rebuilt: %d vectors (%s)",
                         len(chunk_ids), self.faiss_index._current_type)
+
+    def _sync_vector_backends(self) -> None:
+        """Best-effort PR-3 sync from SQLite chunks into configured backends."""
+        try:
+            from backends.faiss_disk import FaissDiskBackend
+            from backends.faiss_mem import FaissMemBackend
+            from vector_sync import sync_all
+        except Exception as exc:
+            logger.debug("Vector backend sync unavailable: %s", exc)
+            return
+
+        backends = []
+        for name in getattr(self.config, "vector_backends", ["faiss-disk"]):
+            if name == "faiss-disk":
+                backends.append(FaissDiskBackend(self.config, self.db))
+            elif name == "faiss-mem":
+                backends.append(FaissMemBackend(self.config))
+
+        if not backends:
+            return
+
+        try:
+            sync_all(backends, self.db, self.config)
+        except Exception as exc:
+            logger.warning("Vector backend sync failed: %s", exc)
 
     def get_faiss_index(self) -> FAISSIndex:
         """Get the current FAISS index (for use by retrieval engine)."""

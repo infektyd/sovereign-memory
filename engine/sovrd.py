@@ -170,6 +170,32 @@ def _handle_ping(params: dict, request_id: Any) -> dict:
     return _make_response("pong", request_id)
 
 
+def _resolve_backend(backend_param, config=None):
+    """
+    Resolve the backend parameter for a search request.
+
+    backend_param may be:
+      None / "auto"      → use config.vector_backends (default: ["faiss-disk"])
+      "faiss-disk"       → single backend by name
+      "faiss-mem"        → single backend by name
+      ["faiss-disk", X]  → fan-out via MultiBackend
+
+    Returns a resolved backend string or list for passing to retrieval.
+    For single-backend default mode, returns None (retrieval uses its own FAISS).
+    """
+    from config import DEFAULT_CONFIG
+    cfg = config or DEFAULT_CONFIG
+
+    if backend_param is None or backend_param == "auto":
+        # Auto-resolution: try each configured backend in order
+        # For now return the first backend in config (full cascade in §2.3)
+        backends = cfg.vector_backends
+        if not backends or backends == ["faiss-disk"]:
+            return None  # Default path — use existing FAISSIndex in retrieval
+        return backends
+    return backend_param
+
+
 def _handle_search(params: dict, request_id: Any) -> dict:
     """Search Sovereign Memory via hybrid retrieval.
 
@@ -182,6 +208,11 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     Accepts optional ``budget_tokens`` for MMR-diverse token-budgeted packing.
     When provided, selects a diverse subset fitting within the token budget.
     ``depth="auto"`` with ``budget_tokens`` uses "snippet" as the base tier.
+
+    Accepts optional ``backend`` parameter:
+      "auto" (default)   — use config.vector_backends priority cascade
+      "faiss-disk"       — force specific backend
+      ["faiss-disk", X]  — fan-out via multi-backend
     """
     global _request_count
     _request_count += 1
@@ -194,10 +225,14 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     limit = min(int(params.get("limit", 5)), 20)
     depth = str(params.get("depth", "snippet"))
     budget_tokens_param = params.get("budget_tokens")
+    backend_param = params.get("backend", "auto")
 
     # depth="auto" means "pick snippet and apply MMR budget packing"
     if depth == "auto":
         depth = "snippet"
+
+    # Resolve backend — None means use the default FAISSIndex path (bit-identical)
+    _resolved_backend = _resolve_backend(backend_param)
 
     try:
         engine = _lazy_retrieval()
@@ -206,6 +241,7 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             agent_id=agent_id,
             limit=limit,
             depth=depth,
+            backend=_resolved_backend,
         )
 
         # Apply MMR token-budget packing if requested

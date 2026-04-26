@@ -585,6 +585,213 @@ class RetrievalEngine:
 
     # ── Public API ─────────────────────────────────────────────
 
+    def _resolve_backends(self, backend_names: list) -> list:
+        """
+        Resolve a list of backend name strings to VectorBackend instances.
+
+        Currently supports: "faiss-disk", "faiss-mem".
+        Stubs ("qdrant", "lance") raise ImportError at construction.
+        """
+        resolved = []
+        for name in backend_names:
+            if name == "faiss-disk":
+                from backends.faiss_disk import FaissDiskBackend
+                b = FaissDiskBackend(self.config, self.db)
+                resolved.append(b)
+            elif name == "faiss-mem":
+                from backends.faiss_mem import FaissMemBackend
+                b = FaissMemBackend(self.config)
+                resolved.append(b)
+            elif name == "qdrant":
+                from backends.qdrant import QdrantBackend
+                b = QdrantBackend(self.config)  # raises ImportError if not installed
+                resolved.append(b)
+            elif name == "lance":
+                from backends.lance import LanceBackend
+                b = LanceBackend(self.config)  # raises ImportError if not installed
+                resolved.append(b)
+            else:
+                logger.warning("Unknown backend %r — skipping", name)
+        return resolved
+
+    def _hits_to_dicts(self, hits, query_emb: np.ndarray) -> List[Dict]:
+        """
+        Convert VectorHit list to the dict format used by _rrf_merge.
+
+        Fetches chunk metadata from SQLite to fill path, agent, etc.
+        """
+        from vector_backend import VectorHit
+        if not hits:
+            return []
+
+        chunk_ids = [h.chunk_id for h in hits]
+        score_map = {h.chunk_id: (h.score, h.backend) for h in hits}
+        doc_best: Dict[int, Dict] = {}
+
+        with self.db.cursor() as c:
+            placeholders = ",".join("?" * len(chunk_ids))
+            c.execute(f"""
+                SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
+                       d.path, d.agent, d.sigil, d.decay_score,
+                       d.page_status, d.privacy_level, d.page_type,
+                       d.evidence_refs, d.indexed_at
+                FROM chunk_embeddings ce
+                JOIN documents d ON d.doc_id = ce.doc_id
+                WHERE ce.chunk_id IN ({placeholders})
+            """, chunk_ids)
+
+            for row in c.fetchall():
+                cid = row["chunk_id"]
+                did = row["doc_id"]
+                sim, bname = score_map.get(cid, (0.0, "unknown"))
+
+                if did not in doc_best or sim > doc_best[did]["similarity"]:
+                    doc_best[did] = {
+                        "doc_id": did,
+                        "chunk_id": cid,
+                        "path": row["path"],
+                        "agent": row["agent"],
+                        "sigil": row["sigil"],
+                        "similarity": sim,
+                        "chunk_text": row["chunk_text"],
+                        "heading_context": row["heading_context"] or "",
+                        "decay_score": row["decay_score"] or 1.0,
+                        "page_status": row["page_status"] or "candidate",
+                        "privacy_level": row["privacy_level"] or "safe",
+                        "page_type": row["page_type"],
+                        "evidence_refs": row["evidence_refs"],
+                        "indexed_at": row["indexed_at"],
+                        "backend_name": bname,
+                    }
+
+        return sorted(doc_best.values(), key=lambda x: x["similarity"], reverse=True)
+
+    def _backend_search(
+        self,
+        query_emb: np.ndarray,
+        limit: int,
+        backend,
+    ) -> List[Dict]:
+        """
+        Search using an explicit VectorBackend instance (PR-3 multi-backend path).
+
+        Returns a list of dicts in the same format as _semantic_search(),
+        with the 'backend_name' field populated from hit.backend.
+        """
+        search_k = limit * 5
+        hits = backend.search(query_emb, k=search_k, filter=None)
+
+        if not hits:
+            return []
+
+        chunk_ids = [h.chunk_id for h in hits]
+        score_map = {h.chunk_id: (h.score, h.backend) for h in hits}
+
+        doc_best: Dict[int, Dict] = {}
+
+        with self.db.cursor() as c:
+            placeholders = ",".join("?" * len(chunk_ids))
+            c.execute(f"""
+                SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
+                       d.path, d.agent, d.sigil, d.decay_score,
+                       d.page_status, d.privacy_level, d.page_type,
+                       d.evidence_refs, d.indexed_at
+                FROM chunk_embeddings ce
+                JOIN documents d ON d.doc_id = ce.doc_id
+                WHERE ce.chunk_id IN ({placeholders})
+            """, chunk_ids)
+
+            for row in c.fetchall():
+                cid = row["chunk_id"]
+                did = row["doc_id"]
+                sim, backend_name = score_map.get(cid, (0.0, "unknown"))
+
+                if did not in doc_best or sim > doc_best[did]["similarity"]:
+                    doc_best[did] = {
+                        "doc_id": did,
+                        "chunk_id": cid,
+                        "path": row["path"],
+                        "agent": row["agent"],
+                        "sigil": row["sigil"],
+                        "similarity": sim,
+                        "chunk_text": row["chunk_text"],
+                        "heading_context": row["heading_context"] or "",
+                        "decay_score": row["decay_score"] or 1.0,
+                        "page_status": row["page_status"] or "candidate",
+                        "privacy_level": row["privacy_level"] or "safe",
+                        "page_type": row["page_type"],
+                        "evidence_refs": row["evidence_refs"],
+                        "indexed_at": row["indexed_at"],
+                        "backend_name": backend_name,
+                    }
+
+        results = sorted(doc_best.values(), key=lambda x: x["similarity"], reverse=True)
+        return results[:limit * 3]
+
+    def _rrf_merge_multi(
+        self,
+        fts_results: List[Dict],
+        semantic_results: List[Dict],
+        extra_backend_results: List[List[Dict]],
+        limit: int,
+    ) -> List[Dict]:
+        """
+        RRF merge: FTS + semantic + Nth backend stream(s).
+
+        Each input is a ranked list. Additional backends each contribute
+        with weight = semantic_weight (same as the primary semantic stream).
+        """
+        k = self.config.rrf_k
+        doc_scores: Dict[int, Dict] = {}
+
+        def _add_stream(ranked_list, weight, stream_label):
+            for rank, r in enumerate(ranked_list, start=1):
+                did = r["doc_id"]
+                if did not in doc_scores:
+                    doc_scores[did] = {
+                        "doc_id": did,
+                        "path": r.get("path", ""),
+                        "agent": r.get("agent", ""),
+                        "sigil": r.get("sigil", ""),
+                        "rrf_score": 0.0,
+                        "decay_score": r.get("decay_score", 1.0),
+                        "fts_rank": None,
+                        "sem_rank": None,
+                        "chunk_text": r.get("chunk_text", ""),
+                        "heading_context": r.get("heading_context", ""),
+                        "page_status": r.get("page_status", "candidate"),
+                        "privacy_level": r.get("privacy_level", "safe"),
+                        "page_type": r.get("page_type"),
+                        "evidence_refs": r.get("evidence_refs"),
+                        "indexed_at": r.get("indexed_at"),
+                        "backend_name": r.get("backend_name", "faiss-disk"),
+                    }
+                doc_scores[did]["rrf_score"] += weight / (k + rank)
+                if stream_label == "fts":
+                    doc_scores[did]["fts_rank"] = rank
+                elif stream_label == "sem" and doc_scores[did]["sem_rank"] is None:
+                    doc_scores[did]["sem_rank"] = rank
+                if r.get("chunk_text") and not doc_scores[did].get("chunk_text"):
+                    doc_scores[did]["chunk_text"] = r["chunk_text"]
+                    doc_scores[did]["heading_context"] = r.get("heading_context", "")
+                if not doc_scores[did].get("page_type") and r.get("page_type"):
+                    doc_scores[did]["page_type"] = r["page_type"]
+                if not doc_scores[did].get("evidence_refs") and r.get("evidence_refs"):
+                    doc_scores[did]["evidence_refs"] = r["evidence_refs"]
+                if not doc_scores[did].get("indexed_at") and r.get("indexed_at"):
+                    doc_scores[did]["indexed_at"] = r["indexed_at"]
+
+        _add_stream(fts_results, self.config.fts_weight, "fts")
+        _add_stream(semantic_results, self.config.semantic_weight, "sem")
+        for extra in extra_backend_results:
+            _add_stream(extra, self.config.semantic_weight, "extra")
+
+        for d in doc_scores.values():
+            d["final_score"] = d["rrf_score"] * d["decay_score"]
+
+        ranked = sorted(doc_scores.values(), key=lambda x: x["final_score"], reverse=True)
+        return ranked[:limit]
+
     def retrieve(
         self,
         query: str,
@@ -596,6 +803,7 @@ class RetrievalEngine:
         include_superseded: bool = False,
         include_rejected: bool = False,
         include_drafts: bool = False,
+        backend=None,
     ) -> List[Dict]:
         """
         Hybrid retrieval: FTS5 + FAISS semantic, RRF fusion, cross-encoder re-rank,
@@ -620,18 +828,55 @@ class RetrievalEngine:
                    "snippet"  — + text (≤280 chars) (~120 tokens) [DEFAULT]
                    "chunk"    — + full chunk text, heading, provenance (~500 tokens)
                    "document" — + full source document (whole_document=1 only)
+            backend: PR-3 backend override.
+                   None (default) — use internal FAISSIndex (bit-identical to pre-PR-3)
+                   VectorBackend  — use this backend for semantic search
+                   list           — fan-out via MultiBackend, merge with RRF
 
         Returns list of ranked results filtered to the requested depth tier.
         Existing callers that pass no depth receive identical results (snippet).
+        With backend=None (default), results are bit-identical to pre-PR-3.
         """
         rerank_k = self.config.reranker_top_k if self.config.reranker_enabled else limit
 
         # Step 1-2: Dual retrieval
         fts_results = self._fts_search(query, rerank_k)
-        semantic_results = self._semantic_search(query, rerank_k)
 
-        # Step 3: RRF merge
-        merged = self._rrf_merge(fts_results, semantic_results, rerank_k)
+        # PR-3: When backend is provided, use it instead of (or in addition to)
+        # the internal FAISSIndex.  With backend=None (default), the existing
+        # _semantic_search path is taken — bit-identical to pre-PR-3.
+        extra_backend_results: List[List[Dict]] = []
+        if backend is None:
+            # Default path — bit-identical to pre-PR-3
+            semantic_results = self._semantic_search(query, rerank_k)
+        elif isinstance(backend, list):
+            # Fan-out: build a MultiBackend from the list of backend names/objects
+            from backends.multi import MultiBackend
+            resolved = self._resolve_backends(backend)
+            if len(resolved) == 1:
+                semantic_results = self._backend_search(
+                    self.model.encode(query).astype(np.float32) if self.model else np.array([]),
+                    rerank_k,
+                    resolved[0],
+                )
+            else:
+                multi = MultiBackend(resolved)
+                query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
+                hits = multi.search(query_emb, k=rerank_k)
+                # Convert VectorHit list to the dict format expected by _rrf_merge
+                semantic_results = self._hits_to_dicts(hits, query_emb)
+        else:
+            # Single explicit backend object
+            query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
+            semantic_results = self._backend_search(query_emb, rerank_k, backend)
+
+        # Step 3: RRF merge — with extra streams if multi-backend
+        if extra_backend_results:
+            merged = self._rrf_merge_multi(
+                fts_results, semantic_results, extra_backend_results, rerank_k
+            )
+        else:
+            merged = self._rrf_merge(fts_results, semantic_results, rerank_k)
 
         # Step 4: Cross-encoder re-rank
         if self.config.reranker_enabled and self.reranker:
