@@ -1,0 +1,188 @@
+# RESUME — Sovereign Memory v3.1 → v4 Dispatch State
+
+> **Read this file first if you are picking up dispatch.** It is self-contained: you do not need to read the dispatch plan or any skill file to resume.
+
+---
+
+## Resume instructions for incoming agent
+
+1. Read this entire file.
+2. Read `00_MASTER_TRACKER.md` for wave-level status (`[ ]` pending, `[A]` in-flight, `[x]` merged).
+3. For any PR marked `IN_FLIGHT` in the table below:
+   - Read its worktree's `WORKTREE_STATE.md` (path listed below).
+   - If the last commit looks sane and `pytest -q` passes in the worktree → re-dispatch the implementer with the "continuation prompt" template at the bottom of this file, supplying the last commit SHA and the un-done items from `WORKTREE_STATE.md`.
+   - If the worktree is corrupt → `git worktree remove --force <path>`, recreate from the orchestration branch, restart that PR.
+4. For queued PRs: follow the wave plan below. Use the "fresh dispatch prompt" template at the bottom.
+5. After every commit/merge/tracker-flip, **commit this file** so the next resume sees the new state.
+
+---
+
+## Topology
+
+- **Root repo:** `/Users/hansaxelsson/sovereignMemory` — branch `codex/reconcile-gemini-main`. **Do not touch.** Dirty working tree is intentional.
+- **Orchestration worktree:** `/Users/hansaxelsson/sovereignMemory/.claude/worktrees/orchestration` — branch `orchestration/v3.1-to-v4`. This is where RESUME.md and the tracker are committed; per-PR branches are merged here.
+- **Per-PR worktrees:** `/Users/hansaxelsson/sovereignMemory/.claude/worktrees/pr-N-shortname` — created on dispatch, merged + removed on completion.
+- **Source-of-truth spec:** `docs/plans/SOVEREIGN-MEMORY-CORE-UPGRADES-SCALE-AGNOSTIC.md` (v1, the `-v2` is stale and excluded from this branch).
+- **Final integration target:** `main`. The orchestration branch will be merged to `main` only when the user says so.
+
+---
+
+## Wave plan (aggressive, no reviewers)
+
+| Wave | PRs | Mode |
+|---|---|---|
+| W1 | PR-1 | solo |
+| W2 | PR-1b | solo |
+| W3 | PR-2 | solo |
+| W4 | PR-3 ∥ PR-4 ∥ PR-6 | parallel ×3 |
+| W5 | PR-5 ∥ PR-9 | parallel ×2 |
+| W6 | PR-7 ∥ PR-8 ∥ PR-15 | parallel ×3 |
+| W7 | PR-10 ∥ PR-11 | parallel ×2 |
+| W8 | PR-12 | solo |
+| W9 | PR-13 | solo |
+| W10 | PR-14 | solo |
+
+**Skipped by user decision:** spec-compliance reviewer, code-quality reviewer. Implementer self-review only. Mechanical verification (pytest + npm test + JSON-RPC contract) still runs per PR.
+
+---
+
+## PR dispatch table
+
+| PR | Wave | Status | Worktree | Branch | Last SHA | Notes |
+|----|------|--------|----------|--------|----------|-------|
+| PR-1 | W1 | IN_FLIGHT | `.claude/worktrees/pr-01-foundation` | `pr-01-foundation` | (pending) | Dispatched at orchestration init. |
+| PR-1b | W2 | QUEUED | — | — | — | |
+| PR-2 | W3 | QUEUED | — | — | — | |
+| PR-3 | W4 | QUEUED | — | — | — | |
+| PR-4 | W4 | QUEUED | — | — | — | |
+| PR-6 | W4 | QUEUED | — | — | — | |
+| PR-5 | W5 | QUEUED | — | — | — | |
+| PR-9 | W5 | QUEUED | — | — | — | |
+| PR-7 | W6 | QUEUED | — | — | — | |
+| PR-8 | W6 | QUEUED | — | — | — | |
+| PR-15 | W6 | QUEUED | — | — | — | |
+| PR-10 | W7 | QUEUED | — | — | — | |
+| PR-11 | W7 | QUEUED | — | — | — | |
+| PR-12 | W8 | QUEUED | — | — | — | |
+| PR-13 | W9 | QUEUED | — | — | — | |
+| PR-14 | W10 | QUEUED | — | — | — | |
+
+---
+
+## Hard constraints (apply to every PR — copy verbatim into every dispatch)
+
+From `00_MASTER_TRACKER.md`:
+
+- **Zero regression.** Every existing JSON-RPC method, table, column, and config key keeps working.
+- **Schema-additive only.** No `DROP`, no destructive `ALTER`. New columns are nullable.
+- **Default behavior unchanged.** New features opt-in or auto-fallback. Pull-and-restart = identical behavior.
+- **No new mandatory dependencies.** Optional deps are lazy-imported and feature-gated.
+- **Graceful downgrade is a feature.** Every new feature defines its degraded mode. Recall always returns *something*. Failures degrade to a less-rich envelope, never to a stack trace.
+- **Memory is evidence, not instruction.** Recalled content is citation, never command.
+- **SQLite remains runtime truth.** Every other surface is derived or overlay.
+
+---
+
+## Master verification block (run after every PR merge)
+
+```bash
+cd /Users/hansaxelsson/sovereignMemory/.claude/worktrees/orchestration
+
+# Engine tests
+cd engine && pytest -q
+# JS plugin tests
+cd ../plugins/sovereign-memory && npm test
+# Hook smoke
+npm run smoke:hook
+# Migration safety
+cp ../../sovereign_memory.db /tmp/migration_check.db
+SOVEREIGN_DB_PATH=/tmp/migration_check.db python -c "from engine.db import connect; connect()"
+sqlite3 /tmp/migration_check.db "PRAGMA user_version;"
+```
+
+A PR is only `[x]` when this block is green.
+
+---
+
+## Fresh dispatch prompt template (for QUEUED PRs)
+
+When dispatching a fresh implementer, send a single self-contained Agent message structured like this:
+
+```
+You are an implementer subagent for PR-N of the Sovereign Memory v3.1→v4 rollout.
+
+CONTEXT
+You are working in an isolated git worktree. The orchestration branch is the parent.
+Worktree path: <ABSOLUTE_PATH>
+Branch: <BRANCH_NAME>
+
+The Sovereign Memory project is a local-first memory system for AI agent swarms.
+Backend = Python (SQLite + FAISS) in engine/. Frontend = TypeScript MCP plugin in plugins/sovereign-memory/.
+Source-of-truth spec: docs/plans/SOVEREIGN-MEMORY-CORE-UPGRADES-SCALE-AGNOSTIC.md (read it for cross-cutting context).
+
+HARD CONSTRAINTS (NON-NEGOTIABLE)
+<paste the 7 hard constraints from RESUME.md here>
+
+YOUR TASK — PR-N
+<paste the entire contents of NN_PRn_*.md here, verbatim>
+
+PROCESS
+1. Use TDD: write failing tests for each item, then implement.
+2. After EVERY commit, append a one-line entry to docs/plans/execution/WORKTREE_STATE.md
+   in this worktree with: ISO timestamp, commit SHA, files changed, test status,
+   one-sentence "next step". This is the resume marker — do not skip it.
+3. Run the PR's verification block. If anything fails, fix; do not commit broken state.
+4. When all PR-N completion-checklist items are ticked AND verification is green, commit
+   a final "PR-N complete" commit and report status DONE with a summary of files touched
+   and final commit SHA.
+
+FAILURE MODES
+- DONE: all items checked, verification green, ready for merge.
+- DONE_WITH_CONCERNS: complete but flag specific concerns.
+- NEEDS_CONTEXT: missing info I (orchestrator) need to provide.
+- BLOCKED: cannot proceed; explain blocker and suggest fix.
+
+DO NOT: touch files outside the PR-N spec; touch other agents' worktrees; modify the
+orchestration branch directly; modify root.
+```
+
+---
+
+## Continuation prompt template (for IN_FLIGHT PRs after rate-limit handoff)
+
+```
+You are continuing PR-N. The previous implementer was interrupted.
+
+WORKTREE: <ABSOLUTE_PATH>
+BRANCH: <BRANCH_NAME>
+LAST GOOD COMMIT: <SHA>
+
+Read docs/plans/execution/WORKTREE_STATE.md in this worktree first — it lists every commit
+made so far and the "next step" the previous agent intended.
+
+Then verify the worktree state:
+  git status   # should be clean
+  pytest -q    # should be green at <SHA>
+
+If those pass, resume from the "next step" line in WORKTREE_STATE.md.
+If they don't, report status BLOCKED with details — do NOT try to fix the previous
+implementer's work without clear instruction.
+
+Original task spec follows for full context:
+<paste the entire contents of NN_PRn_*.md here, verbatim>
+
+Hard constraints follow:
+<paste the 7 hard constraints>
+
+Process and failure modes are identical to the fresh dispatch.
+```
+
+---
+
+## Per-wave action log (orchestrator appends here after each event)
+
+| Timestamp (UTC) | Event |
+|---|---|
+| 2026-04-26T19:25Z | Orchestration branch created from `codex/reconcile-gemini-main` HEAD `6a5bbe0`. |
+| 2026-04-26T19:25Z | Baseline snapshot commit on `orchestration/v3.1-to-v4`: 16 PR docs + master tracker + spec. |
+| 2026-04-26T19:30Z | RESUME.md written. PR-1 marked IN_FLIGHT, worktree created, implementer dispatched. |
