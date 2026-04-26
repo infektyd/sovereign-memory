@@ -45,6 +45,9 @@ class SovereignConfig:
     # Embedding model
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dim: int = 384
+    # Optional downstream FAISS quantization. SQLite remains float32 truth.
+    # Supported: "fp32" (default), "int8". Changing this requires reindex/rebuild.
+    embedding_quantization: str = "fp32"
 
     # FAISS indexing
     # "flat" = brute-force (exact), "hnsw" = approximate (fast at scale)
@@ -76,6 +79,9 @@ class SovereignConfig:
     max_tokens: int = 1024               # Hard cap — code blocks truncated at this limit
     sentence_snap: bool = True           # Snap to sentence boundaries, not raw token counts
     code_treatment: str = "single_chunk"  # "single_chunk" = preserve code blocks intact
+    # Optional post-pass: merge adjacent same-heading chunks with cosine > 0.9.
+    # Applies only to newly indexed or explicitly reindexed content.
+    chunking_semantic_merge: bool = False
 
     # Write-back memory
     writeback_enabled: bool = True
