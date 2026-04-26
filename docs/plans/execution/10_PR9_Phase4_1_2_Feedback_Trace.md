@@ -83,15 +83,15 @@ print('PASS')
 
 ## PR-9 Completion Checklist
 
-- [ ] `006_feedback.sql` creates feedback table
-- [ ] `daemon.feedback()` JSON-RPC stores rows
-- [ ] Retrieval applies per-result demotion from negative feedback (max -0.3)
-- [ ] `feedback_enabled` config toggle works
-- [ ] `engine/trace.py` TraceRing with capacity 100
-- [ ] Every `search()` returns `trace_id`
-- [ ] `daemon.trace(trace_id)` returns full breakdown
-- [ ] Ring buffer bounded at ~5MB
-- [ ] All existing tests pass
+- [x] `006_feedback.sql` creates feedback table
+- [x] `daemon.feedback()` JSON-RPC stores rows
+- [x] Retrieval applies per-result demotion from negative feedback (max -0.3)
+- [x] `feedback_enabled` config toggle works
+- [x] `engine/trace.py` TraceRing with capacity 100
+- [x] Every `search()` returns `trace_id`
+- [x] `daemon.trace(trace_id)` returns full breakdown
+- [x] Ring buffer bounded at ~5MB
+- [x] All existing tests pass
 
 ---
 

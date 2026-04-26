@@ -88,6 +88,9 @@ class SovereignConfig:
     context_budget_tokens: int = 4096     # Max tokens to return in a single recall
     token_model: str = "cl100k_base"      # tiktoken encoding for counting
 
+    # Feedback demotion (PR-9)
+    feedback_enabled: bool = True
+
     # Memory decay (Phase 8)
     decay_half_life_days: float = 7.0
     decay_min_score: float = 0.05

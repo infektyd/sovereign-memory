@@ -65,6 +65,7 @@ import socket
 import sys
 import time
 import threading
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -114,6 +115,21 @@ def _lazy_episodic():
         from episodic import EpisodicMemory
         _episodic = EpisodicMemory(SovereignDB(), DEFAULT_CONFIG)
     return _episodic
+
+
+def _trace_ring():
+    """Load engine/trace.py without colliding with Python's stdlib trace module."""
+    module_name = "_sovereign_trace"
+    if module_name in sys.modules:
+        return sys.modules[module_name].GLOBAL_TRACE_RING
+    trace_path = _ENGINE_DIR / "trace.py"
+    spec = importlib.util.spec_from_file_location(module_name, trace_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load trace module from {trace_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.GLOBAL_TRACE_RING
 
 # ── Dual-write helper (flat-file MEMORY.md) ──────────────────────────────
 
@@ -258,11 +274,83 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             "agent_id": agent_id,
             "depth": depth,
             "count": len(results),
+            "trace_id": getattr(engine, "last_trace_id", None),
             "results": results,
         }, request_id)
     except Exception as exc:
         logger.exception("search failed")
         return _make_error(-32000, f"Search error: {exc}", request_id)
+
+
+def _handle_feedback(params: dict, request_id: Any) -> dict:
+    """Store useful/not-useful feedback for a prior search result."""
+    global _request_count
+    _request_count += 1
+
+    query = params.get("query", "")
+    result_id = params.get("result_id")
+    if not query:
+        return _make_error(-32602, "query is required", request_id)
+    if result_id is None:
+        return _make_error(-32602, "result_id is required", request_id)
+
+    try:
+        result_id = int(result_id)
+    except (TypeError, ValueError):
+        return _make_error(-32602, "result_id must be an integer", request_id)
+
+    useful = bool(params.get("useful", False))
+    agent_id = params.get("agent_id", "main")
+
+    try:
+        result = _lazy_retrieval().record_feedback(
+            query=query,
+            result_id=result_id,
+            useful=useful,
+            agent_id=agent_id,
+        )
+        return _make_response(result, request_id)
+    except Exception as exc:
+        logger.exception("feedback failed")
+        return _make_error(-32000, f"Feedback error: {exc}", request_id)
+
+
+def _handle_trace(params: dict, request_id: Any) -> dict:
+    """Return a process-local trace entry by id."""
+    global _request_count
+    _request_count += 1
+
+    trace_id = params.get("trace_id")
+    if not trace_id:
+        return _make_error(-32602, "trace_id is required", request_id)
+
+    try:
+        trace = _trace_ring().get(str(trace_id))
+        if trace is None:
+            return _make_response({
+                "trace_id": trace_id,
+                "trace": None,
+                "status": "not_found",
+                "ephemeral": True,
+            }, request_id)
+        return _make_response({
+            "trace_id": trace_id,
+            "trace": trace,
+            "status": "ok",
+            "ephemeral": True,
+        }, request_id)
+    except Exception as exc:
+        logger.warning("trace lookup failed: %s", exc)
+        return _make_response({
+            "trace_id": trace_id,
+            "trace": {
+                "trace_id": trace_id,
+                "degraded": True,
+                "reason": str(exc),
+            },
+            "status": "degraded",
+            "ephemeral": True,
+        }, request_id)
 
 
 def _handle_expand(params: dict, request_id: Any) -> dict:
@@ -732,6 +820,8 @@ def _handle_status(params: dict, request_id: Any) -> dict:
 _METHODS: Dict[str, callable] = {
     "ping":                   _handle_ping,
     "search":                 _handle_search,
+    "feedback":               _handle_feedback,
+    "trace":                  _handle_trace,
     "expand":                 _handle_expand,
     "read":                   _handle_read,
     "learn":                  _handle_learn,

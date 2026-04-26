@@ -79,6 +79,48 @@ def _rpc(socket_path: str, method: str, params: dict = None) -> dict:
         sys.exit(1)
 
 
+def search(
+    query: str,
+    agent_id: str = None,
+    limit: int = 5,
+    depth: str = "snippet",
+    socket_path: str = DEFAULT_SOCKET,
+) -> list:
+    """Programmatic search helper used by verification scripts."""
+    params = {"query": query, "limit": limit, "depth": depth}
+    if agent_id:
+        params["agent_id"] = agent_id
+    result = _rpc(socket_path, "search", params)
+    trace_id = result.get("trace_id")
+    results = result.get("results", [])
+    if trace_id:
+        for item in results:
+            item.setdefault("trace_id", trace_id)
+    return results
+
+
+def feedback(
+    query: str,
+    result_id: int,
+    useful: bool,
+    agent_id: str = "main",
+    socket_path: str = DEFAULT_SOCKET,
+) -> dict:
+    """Programmatic feedback helper."""
+    return _rpc(socket_path, "feedback", {
+        "query": query,
+        "result_id": result_id,
+        "useful": useful,
+        "agent_id": agent_id,
+    })
+
+
+def trace(trace_id: str, socket_path: str = DEFAULT_SOCKET) -> dict:
+    """Programmatic trace lookup helper."""
+    result = _rpc(socket_path, "trace", {"trace_id": trace_id})
+    return result.get("trace") or result
+
+
 def _cmd_status(args):
     result = _rpc(args.socket, "status")
     daemon = result.get("daemon", {})
