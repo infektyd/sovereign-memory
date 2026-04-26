@@ -287,19 +287,28 @@ class TestUnknownKwargs:
         assert any("unknown kwarg" in m for m in caplog.messages)
         assert isinstance(results, list)
 
-    def test_unknown_kwarg_use_hyde_stripped(self, caplog):
+    def test_use_hyde_kwarg_passes_through(self, caplog):
         import logging
         from eval.harness import _safe_search
 
         queries = [{"query": "test", "expected_doc_ids": [1], "notes": ""}]
         mock = _MockSearcher(queries)
+        seen = {}
+        original_search = mock.search
+
+        def capture_search(query, **kwargs):
+            seen.update(kwargs)
+            return original_search(query, **kwargs)
+
+        mock.search = capture_search
 
         with caplog.at_level(logging.WARNING):
             results, latency = _safe_search(
                 mock, "test", "with-hyde", {"use_hyde": True}
             )
 
-        assert any("use_hyde" in m for m in caplog.messages)
+        assert not any("use_hyde" in m for m in caplog.messages)
+        assert seen["use_hyde"] is True
         assert isinstance(results, list)
 
 

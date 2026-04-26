@@ -91,6 +91,10 @@ class SovereignConfig:
     # Feedback demotion (PR-9)
     feedback_enabled: bool = True
 
+    # HyDE cold-query second pass (PR-8)
+    hyde_enabled: bool = True
+    hyde_confidence_floor: float = 0.4
+
     # Memory decay (Phase 8)
     decay_half_life_days: float = 7.0
     decay_min_score: float = 0.05
