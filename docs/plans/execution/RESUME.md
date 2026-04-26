@@ -51,8 +51,8 @@
 | PR | Wave | Status | Worktree | Branch | Last SHA | Notes |
 |----|------|--------|----------|--------|----------|-------|
 | PR-1 | W1 | MERGED | (removed) | `pr-01-foundation` | `7a09fc4` | Merged via `--no-ff` into orchestration. 13/13 pytest, 29/29 npm. |
-| PR-1b | W2 | IN_FLIGHT | `.claude/worktrees/pr-01b-contracts` | `pr-01b-contracts` | (pending) | W2 solo — touches docs/contracts/ + plugins/sovereign-memory/src + engine/retrieval.py + engine/sovrd.py + engine/tokens.py. |
-| PR-2 | W3 | QUEUED | — | — | — | |
+| PR-1b | W2 | MERGED | (removed) | `pr-01b-contracts` | `cafb5bb` | 31/31 pytest, 29/29 npm. |
+| PR-2 | W3 | IN_FLIGHT | `.claude/worktrees/pr-02-faiss-envelope` | `pr-02-faiss-envelope` | (pending) | W3 solo — FAISS persistence, result envelope, vault page schema. |
 | PR-3 | W4 | QUEUED | — | — | — | |
 | PR-4 | W4 | QUEUED | — | — | — | |
 | PR-6 | W4 | QUEUED | — | — | — | |
@@ -189,3 +189,5 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T19:50Z | PR-1 implementer reported DONE: 7a09fc4 (foundation) + 2b9c5f4 (state). 13/13 pytest, 29/29 npm. |
 | 2026-04-26T19:51Z | PR-1 merged into orchestration via --no-ff. pytest re-verified green. |
 | 2026-04-26T19:52Z | PR-1 worktree removed. PR-1b worktree created off orchestration HEAD. PR-1b dispatched. |
+| 2026-04-26T20:05Z | PR-1b implementer reported DONE: cafb5bb + e9988d0. 31/31 pytest, 29/29 npm. |
+| 2026-04-26T20:06Z | PR-1b merged into orchestration via --no-ff. PR-2 worktree created. PR-2 dispatched. |
