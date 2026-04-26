@@ -150,7 +150,9 @@ export async function learnMemory(input: {
   });
 }
 
-function jsonRpcSocketRequest(socketPath: string, method: string, params: Record<string, unknown>): Promise<JsonResult> {
+export type JsonRpcRequester = (socketPath: string, method: string, params: Record<string, unknown>) => Promise<JsonResult>;
+
+export function jsonRpcSocketRequest(socketPath: string, method: string, params: Record<string, unknown>): Promise<JsonResult> {
   return new Promise((resolve) => {
     if (!existsSync(socketPath)) {
       resolve({ ok: false, error: `Socket not found: ${socketPath}` });
@@ -206,6 +208,27 @@ export async function handoffMemory(input: {
       from_agent: input.fromAgent,
       to_agent: input.toAgent,
       packet: input.packet,
+    });
+    if (last.ok) return last;
+  }
+  return last;
+}
+
+export async function compileVault(
+  input: {
+    passName?: string;
+    vaultPath?: string;
+    dryRun?: boolean;
+  },
+  requester: JsonRpcRequester = jsonRpcSocketRequest,
+): Promise<JsonResult> {
+  const socketCandidates = [...new Set([SOCKET_PATH, "/tmp/sovrd.sock"])];
+  let last: JsonResult = { ok: false, error: "No socket attempted" };
+  for (const socketPath of socketCandidates) {
+    last = await requester(socketPath, "daemon.compile", {
+      pass_name: input.passName ?? "session_distillation",
+      vault_path: input.vaultPath,
+      dry_run: input.dryRun ?? true,
     });
     if (last.ok) return last;
   }

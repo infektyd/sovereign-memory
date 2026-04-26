@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildStatusReport, formatRecall, parseSovrdJson } from "../dist/sovereign.js";
+import { buildStatusReport, compileVault, formatRecall, parseSovrdJson } from "../dist/sovereign.js";
 
 test("parseSovrdJson accepts healthy JSON responses", () => {
   assert.deepEqual(parseSovrdJson('{"status":"ok","agent":"shared-daemon"}'), {
@@ -62,4 +62,20 @@ test("buildStatusReport includes vault, socket, AFM, and audit state", async () 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("compileVault sends daemon.compile JSON-RPC with dry-run default", async () => {
+  const calls = [];
+  const result = await compileVault(
+    { passName: "session_distillation" },
+    async (_socketPath, method, params) => {
+      calls.push({ method, params });
+      return { ok: true, data: { status: "ok", dry_run: params.dry_run } };
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].method, "daemon.compile");
+  assert.equal(calls[0].params.pass_name, "session_distillation");
+  assert.equal(calls[0].params.dry_run, true);
 });

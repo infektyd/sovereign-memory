@@ -105,6 +105,20 @@ class SovereignConfig:
     hyde_enabled: bool = True
     hyde_confidence_floor: float = 0.4
 
+    # AFM self-organization loop (PR-12)
+    # Opt-in. Set SOVEREIGN_AFM_LOOP=on/1/true to enable; "off" is a kill switch.
+    afm_loop_schedule: dict = field(default_factory=lambda: {
+        "enabled": os.environ.get("SOVEREIGN_AFM_LOOP", "off").lower() in {"1", "true", "yes", "on"},
+        "idle_seconds": 300,
+        "draft_ttl_days": 14,
+        "passes": {
+            "session_distillation": {
+                "interval_seconds": 24 * 60 * 60,
+                "lookback_hours": 24,
+            },
+        },
+    })
+
     # Memory decay (Phase 8)
     decay_half_life_days: float = 7.0
     decay_min_score: float = 0.05

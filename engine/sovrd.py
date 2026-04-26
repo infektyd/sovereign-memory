@@ -172,7 +172,7 @@ VERSION = "0.1.0"
 _start_time = 0.0
 _request_count = 0
 _dual_write_enabled = False
-_LATENCY_METHODS = ("search", "learn", "read", "embedding", "cross_encoder")
+_LATENCY_METHODS = ("search", "learn", "read", "embedding", "cross_encoder", "afm")
 _latencies = {name: deque(maxlen=100) for name in _LATENCY_METHODS}
 
 
@@ -1194,9 +1194,25 @@ def _handle_health_report(params: dict, request_id: Any) -> dict:
         "contradicting_learnings": [],
         "vector_backend_lag": [],
         "faiss_cache_age_seconds": _faiss_cache_age_seconds(DEFAULT_CONFIG),
+        "afm_loop": {
+            "last_run_per_pass": {},
+            "drafts_pending": 0,
+            "drafts_pending_oldest": None,
+            "afm_latency_p95": 0.0,
+            "status": "disabled" if not _afm_loop_enabled(DEFAULT_CONFIG) else "ok",
+        },
     }
 
     try:
+        try:
+            from afm_writer import writer_status
+            report["afm_loop"] = writer_status(DEFAULT_CONFIG.vault_path)
+            if not _afm_loop_enabled(DEFAULT_CONFIG):
+                report["afm_loop"]["status"] = "disabled"
+        except Exception as exc:
+            report["afm_loop"]["status"] = "degraded"
+            report["afm_loop"]["error"] = str(exc)
+
         db = SovereignDB(DEFAULT_CONFIG)
         with db.cursor() as c:
             c.execute(
@@ -1308,6 +1324,107 @@ def _handle_hygiene_report(params: dict, request_id: Any) -> dict:
         }, request_id)
 
 
+def _afm_loop_enabled(config=DEFAULT_CONFIG) -> bool:
+    if os.environ.get("SOVEREIGN_AFM_LOOP", "").lower() == "off":
+        return False
+    return bool((getattr(config, "afm_loop_schedule", {}) or {}).get("enabled"))
+
+
+def _handle_daemon_compile(params: dict, request_id: Any) -> dict:
+    """Run an AFM compile pass. Defaults to dry-run and never auto-accepts."""
+    global _request_count
+    _request_count += 1
+    started_at = time.perf_counter()
+
+    pass_name = str(params.get("pass_name") or "").strip()
+    if not pass_name:
+        return _make_error(-32602, "pass_name is required", request_id)
+    dry_run = bool(params.get("dry_run", True))
+    vault_path = str(params.get("vault_path") or DEFAULT_CONFIG.vault_path)
+
+    if not _afm_loop_enabled(DEFAULT_CONFIG):
+        return _make_response({
+            "status": "afm_unavailable",
+            "reason": "AFM loop disabled",
+            "pass_name": pass_name,
+            "dry_run": dry_run,
+            "drafts": [],
+            "drafts_written": [],
+        }, request_id)
+
+    try:
+        if pass_name != "session_distillation":
+            return _make_error(-32602, f"unsupported pass_name: {pass_name}", request_id)
+        trace_id = f"afm-{uuid.uuid4().hex[:12]}"
+        db = SovereignDB(DEFAULT_CONFIG)
+        from afm_passes.session_distillation import run as run_session_distillation
+
+        result = run_session_distillation(
+            db,
+            DEFAULT_CONFIG,
+            vault_path=vault_path,
+            dry_run=dry_run,
+            trace_id=trace_id,
+        )
+        if not dry_run and result.get("drafts"):
+            from afm_writer import submit_drafts
+            write_result = submit_drafts({
+                "pass_name": pass_name,
+                "trace_id": trace_id,
+                "vault_path": vault_path,
+                "drafts": result["drafts"],
+                "writeback": _writeback,
+            })
+            result.update(write_result)
+        else:
+            result.setdefault("drafts_written", [])
+
+        try:
+            _trace_ring().put(trace_id, {
+                "kind": "afm_loop",
+                "pass_name": pass_name,
+                "inputs": result.get("inputs"),
+                "prompt": result.get("prompt"),
+                "output": result.get("output"),
+                "draft_page_ids": [draft.get("page_id") for draft in result.get("drafts", [])],
+                "dry_run": dry_run,
+            })
+        except Exception as exc:
+            logger.warning("AFM trace capture degraded: %s", exc)
+        return _make_response(result, request_id)
+    except Exception as exc:
+        logger.exception("daemon.compile failed")
+        return _make_response({
+            "status": "afm_unavailable",
+            "reason": str(exc),
+            "pass_name": pass_name,
+            "dry_run": dry_run,
+            "drafts": [],
+            "drafts_written": [],
+        }, request_id)
+    finally:
+        _record_latency("afm", time.perf_counter() - started_at)
+
+
+def _handle_daemon_endorse(params: dict, request_id: Any) -> dict:
+    """Endorse a draft page by page_id. Accept/reject/edit only."""
+    global _request_count
+    _request_count += 1
+    page_id = str(params.get("page_id") or "").strip()
+    decision = str(params.get("decision") or "").strip()
+    if not page_id:
+        return _make_error(-32602, "page_id is required", request_id)
+    if decision not in {"accept", "reject", "edit"}:
+        return _make_error(-32602, "decision must be accept, reject, or edit", request_id)
+    vault_path = str(params.get("vault_path") or DEFAULT_CONFIG.vault_path)
+    try:
+        from afm_writer import endorse_draft
+        return _make_response(endorse_draft(vault_path, page_id, decision), request_id)
+    except Exception as exc:
+        logger.warning("daemon.endorse failed: %s", exc)
+        return _make_error(-32000, f"Endorse error: {exc}", request_id)
+
+
 # Method registry
 _METHODS: Dict[str, callable] = {
     "ping":                   _handle_ping,
@@ -1321,6 +1438,8 @@ _METHODS: Dict[str, callable] = {
     "log_event":              _handle_log_event,
     "daemon.handoff":         _handle_daemon_handoff,
     "handoff":                _handle_daemon_handoff,
+    "daemon.compile":         _handle_daemon_compile,
+    "daemon.endorse":         _handle_daemon_endorse,
     "status":                 _handle_status,
     "health_report":          _handle_health_report,
     "hygiene_report":         _handle_hygiene_report,

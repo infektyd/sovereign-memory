@@ -159,13 +159,13 @@ def test_health_report_returns_required_fields(tmp_path, monkeypatch):
 
     resp = sovrd._dispatch({"jsonrpc": "2.0", "id": 1, "method": "health_report", "params": {}})
     assert "error" not in resp
-    assert set(resp["result"]) == {
+    assert {
         "stale_docs",
         "never_recalled",
         "contradicting_learnings",
         "vector_backend_lag",
         "faiss_cache_age_seconds",
-    }
+    }.issubset(resp["result"])
 
 
 def test_hygiene_report_clean_vault_has_zero_blocks(tmp_path):

@@ -387,6 +387,64 @@ def cmd_hygiene(args):
     print(json.dumps(summary, indent=2))
 
 
+def cmd_compile(args):
+    """Run an AFM compile pass from the CLI. Defaults to dry-run."""
+    pass_name = "session_distillation"
+    dry_run = True
+    vault = DEFAULT_CONFIG.vault_path
+    i = 0
+    while i < len(args):
+        if args[i] == "--pass" and i + 1 < len(args):
+            pass_name = args[i + 1]
+            i += 2
+        elif args[i] == "--vault" and i + 1 < len(args):
+            vault = args[i + 1]
+            i += 2
+        elif args[i] == "--dry-run":
+            dry_run = True
+            i += 1
+        elif args[i] == "--wet-run":
+            dry_run = False
+            i += 1
+        else:
+            print("Usage: sovereign_memory.py compile --pass session_distillation [--dry-run|--wet-run] [--vault <path>]")
+            sys.exit(1)
+
+    if not getattr(DEFAULT_CONFIG, "afm_loop_schedule", {}).get("enabled", False):
+        print(json.dumps({
+            "status": "afm_unavailable",
+            "reason": "AFM loop disabled",
+            "pass_name": pass_name,
+            "dry_run": dry_run,
+            "drafts": [],
+            "drafts_written": [],
+        }, indent=2))
+        return
+
+    if pass_name != "session_distillation":
+        print(json.dumps({"status": "error", "error": f"unsupported pass: {pass_name}"}, indent=2))
+        sys.exit(2)
+
+    import uuid
+    from afm_passes.session_distillation import run as run_session_distillation
+
+    db = SovereignDB(DEFAULT_CONFIG)
+    trace_id = f"afm-{uuid.uuid4().hex[:12]}"
+    try:
+        result = run_session_distillation(db, DEFAULT_CONFIG, vault_path=vault, dry_run=dry_run, trace_id=trace_id)
+        if not dry_run and result.get("drafts"):
+            from afm_writer import submit_drafts
+            result.update(submit_drafts({
+                "pass_name": pass_name,
+                "trace_id": trace_id,
+                "vault_path": vault,
+                "drafts": result["drafts"],
+            }))
+        print(json.dumps(result, indent=2))
+    finally:
+        db.close()
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -413,6 +471,7 @@ def main():
         "faiss": cmd_faiss,
         "vectors": cmd_vectors,
         "hygiene": cmd_hygiene,
+        "compile": cmd_compile,
     }
 
     if command in commands:
