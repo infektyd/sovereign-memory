@@ -16,6 +16,11 @@ from typing import Optional
 
 from config import SovereignConfig, DEFAULT_CONFIG
 
+# Module-level flag: migrations run exactly once per process, regardless of
+# how many SovereignDB instances are created or how many threads call connect.
+_migrations_run = False
+_migrations_lock = threading.Lock()
+
 
 class SovereignDB:
     """
@@ -300,8 +305,40 @@ class SovereignDB:
 
         conn.commit()
 
+        # Run schema migrations exactly once per process, after the base schema
+        # is committed. The module-level flag ensures re-entry is impossible
+        # even if multiple SovereignDB instances are created.
+        global _migrations_run
+        if not _migrations_run:
+            with _migrations_lock:
+                if not _migrations_run:
+                    try:
+                        from migrations import run_migrations
+                        run_migrations(conn)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("sovereign.db").warning(
+                            "Migrations runner failed (non-fatal): %s", e
+                        )
+                    _migrations_run = True
+
     def close(self):
         """Close thread-local connection."""
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+
+def connect(config: SovereignConfig = DEFAULT_CONFIG) -> SovereignDB:
+    """
+    Create and return a SovereignDB instance with the schema initialized and
+    migrations applied. This is the canonical entry point for callers that
+    just need a connected database handle.
+
+    The migrations runner is guarded by a module-level flag and runs at most
+    once per process, even if connect() is called multiple times.
+    """
+    db = SovereignDB(config)
+    # Trigger schema init + migrations by acquiring a connection
+    db._get_conn()
+    return db

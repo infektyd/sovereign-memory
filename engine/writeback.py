@@ -71,15 +71,9 @@ class WriteBackMemory:
 
     @property
     def model(self):
-        """Lazy-load embedding model."""
-        if self._model is None:
-            os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(self.config.embedding_model)
-            except ImportError:
-                self._model = False
-        return self._model if self._model is not False else None
+        """Return the process-wide embedding model singleton."""
+        from models import get_embedder
+        return get_embedder()
 
     def store_learning(
         self,

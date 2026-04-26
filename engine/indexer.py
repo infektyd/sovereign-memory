@@ -41,17 +41,9 @@ class VaultIndexer:
 
     @property
     def model(self):
-        """Lazy-load sentence transformer."""
-        if self._model is None:
-            os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(self.config.embedding_model)
-                logger.info("Model loaded: %s", self.config.embedding_model)
-            except ImportError:
-                logger.warning("sentence-transformers not installed — semantic search disabled")
-                self._model = False  # Sentinel: tried and failed
-        return self._model if self._model is not False else None
+        """Return the process-wide embedding model singleton."""
+        from models import get_embedder
+        return get_embedder()
 
     # ── Metadata extraction ────────────────────────────────────
 

@@ -131,12 +131,17 @@ def discover_sources():
 
 
 def get_embedding(text, model=None):
-    """Generate embedding for identity text. Uses sentence-transformers."""
+    """Generate embedding for identity text. Uses the shared model singleton."""
     try:
-        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-        from sentence_transformers import SentenceTransformer
         if model is None:
-            model = SentenceTransformer("all-MiniLM-L6-v2")
+            # Use the process-wide singleton to avoid reloading weights
+            import sys as _sys
+            import os as _os
+            _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from models import get_embedder
+            model = get_embedder()
+        if model is None:
+            raise ImportError("embedding model unavailable")
         emb = model.encode(text)
         import numpy as np
         return emb.astype(np.float32).tobytes()
