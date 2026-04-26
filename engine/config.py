@@ -101,6 +101,9 @@ class SovereignConfig:
     # "rule" is default-on; "afm" is opt-in per request until eval-gated.
     query_expand_default: str = "rule"
 
+    # Vault reorganization pass (PR-14)
+    reorg_horizon_days: int = 30
+
     # HyDE cold-query second pass (PR-8)
     hyde_enabled: bool = True
     hyde_confidence_floor: float = 0.4
@@ -123,6 +126,12 @@ class SovereignConfig:
             "procedure_extraction": {
                 "interval_seconds": 24 * 60 * 60,
                 "lookback_days": 90,
+            },
+            "reorganization": {
+                "interval_seconds": 7 * 24 * 60 * 60,
+            },
+            "pruning": {
+                "interval_seconds": 24 * 60 * 60,
             },
         },
     })
