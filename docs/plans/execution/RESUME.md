@@ -53,9 +53,9 @@
 | PR-1 | W1 | MERGED | (removed) | `pr-01-foundation` | `7a09fc4` | Merged via `--no-ff` into orchestration. 13/13 pytest, 29/29 npm. |
 | PR-1b | W2 | MERGED | (removed) | `pr-01b-contracts` | `cafb5bb` | 31/31 pytest, 29/29 npm. |
 | PR-2 | W3 | MERGED | (removed) | `pr-02-faiss-envelope` | `be4492e` | 80 passed, 3 skipped (faiss-cpu missing); 29/29 npm; cold-start 15.7ms. |
-| PR-3 | W4 | IN_FLIGHT | `.claude/worktrees/pr-03-storage` | `pr-03-storage` | (pending) | Adds migration 003. Touches retrieval.py + sovrd.py + config.py + new backends/. |
-| PR-4 | W4 | IN_FLIGHT | `.claude/worktrees/pr-04-eval-harness` | `pr-04-eval-harness` | (pending) | All-new files: engine/eval/, eval/, docs/contracts/POLICY|THREAT_MODEL|WORKFLOWS.md. Zero merge risk. |
-| PR-6 | W4 | IN_FLIGHT | `.claude/worktrees/pr-06-contradictions` | `pr-06-contradictions` | (pending) | Adds migration 005 (NUMBERING IS INTENTIONAL — runner now tracks by name not user_version). Touches writeback.py + sovrd.py (different methods than PR-3). |
+| PR-3 | W4 | MERGED | `.claude/worktrees/pr-03-storage` | `pr-03-storage` | `2e01a2d` | Merged into orchestration. 84 passed, 3 skipped; vector CLI status passed. |
+| PR-4 | W4 | MERGED | `.claude/worktrees/pr-04-eval-harness` | `pr-04-eval-harness` | `fc52e89` | Merged into orchestration. 121 passed, 3 skipped; mock harness baseline R@5=0.9608. |
+| PR-6 | W4 | MERGED | `.claude/worktrees/pr-06-contradictions` | `pr-06-contradictions` | `38e0647` | Merged into orchestration. 114 passed, 3 skipped; focused contradictions suite 34 passed. |
 | PR-5 | W5 | QUEUED | — | — | — | |
 | PR-9 | W5 | QUEUED | — | — | — | |
 | PR-7 | W6 | QUEUED | — | — | — | |
@@ -194,3 +194,5 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T20:25Z | PR-2 implementer reported DONE: be4492e + 65519e1. 80 passed, 3 skipped, 29/29 npm. PR-2 merged. |
 | 2026-04-26T20:30Z | INFRA FIX: patched engine/migrations.py to track applied migrations by name (schema_migrations table). Old runner gated on user_version, which would silently skip migration 004 (PR-5) after 005 (PR-6) lands in W4. Back-fills automatically against existing user_version. 80 prior tests still green. |
 | 2026-04-26T20:32Z | W4 dispatch: PR-3, PR-4, PR-6 worktrees created off orchestration HEAD. All three implementers dispatched in parallel. |
+| 2026-04-26T18:00Z | W4 recovered after interruption: PR-3, PR-4, and PR-6 partial worktrees were finished, tested, committed, and merged into orchestration. Merge conflicts were additive only (`WORKTREE_STATE.md`, `config.py`, `test_pr2_envelope.py`). Tracker updated to `[x]`. |
+| 2026-04-26T18:03Z | W4 verification passed on orchestration: `pytest -q` 159 passed / 3 skipped; plugin `npm test` 29/29 passed after local `npm install`; `npm run smoke:hook` returned a valid envelope; migration safety on `/tmp/migration_check.db` reported `PRAGMA user_version = 5`. |
