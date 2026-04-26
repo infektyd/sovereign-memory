@@ -271,20 +271,18 @@ class TestRunEval:
 
 class TestUnknownKwargs:
 
-    def test_unknown_kwarg_logs_warning_not_crash(self, caplog):
-        """Config with unrecognised kwarg 'expand' should log warning, not crash."""
-        import logging
+    def test_expand_kwarg_is_forwarded(self, caplog):
+        """PR-7: with-expand is now recognised and forwarded to search()."""
         from eval.harness import _safe_search
 
         queries = [{"query": "test", "expected_doc_ids": [1], "notes": ""}]
         mock = _MockSearcher(queries)
 
-        with caplog.at_level(logging.WARNING):
-            results, latency = _safe_search(
-                mock, "test", "with-expand", {"expand": True}
-            )
+        results, latency = _safe_search(
+            mock, "test", "with-expand", {"expand": True}
+        )
 
-        assert any("unknown kwarg" in m for m in caplog.messages)
+        assert not any("unknown kwarg" in m for m in caplog.messages)
         assert isinstance(results, list)
 
     def test_unknown_kwarg_use_hyde_stripped(self, caplog):

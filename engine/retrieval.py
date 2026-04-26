@@ -22,6 +22,7 @@ import math
 import logging
 import hashlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from typing import List, Dict, Literal, Optional, Sequence
@@ -31,6 +32,8 @@ import numpy as np
 from config import SovereignConfig, DEFAULT_CONFIG
 from db import SovereignDB
 from faiss_index import FAISSIndex
+from query_expand import expand as expand_query
+from query_expand import summarize_with_afm
 
 logger = logging.getLogger("sovereign.retrieval")
 
@@ -1137,6 +1140,125 @@ class RetrievalEngine:
             for row in rows
         ]
 
+    def _resolve_query_variants(self, query: str, expand) -> List[str]:
+        """Resolve the public expand flag to concrete query variants."""
+        if expand is False or expand is None:
+            return [query]
+        mode = getattr(self.config, "query_expand_default", "rule") or "rule"
+        if isinstance(expand, str):
+            mode = expand
+            if mode.lower() in {"false", "off", "none", "0"}:
+                return [query]
+        elif expand is True and str(mode).lower() not in {"rule", "afm"}:
+            mode = "rule"
+        try:
+            variants = expand_query(query, mode=str(mode).lower())
+        except Exception as exc:  # noqa: BLE001 - recall must not raise here
+            logger.warning("Query expansion failed: %s — using original query", exc)
+            variants = [query]
+        return variants or [query]
+
+    def _merge_expanded_results(
+        self,
+        variant_results: List[List[Dict]],
+        query_variants: List[str],
+        limit: int,
+    ) -> List[Dict]:
+        """Merge formatted per-variant result lists with RRF by doc_id."""
+        k = self.config.rrf_k
+        merged: Dict[int, Dict] = {}
+        for variant, results in zip(query_variants, variant_results):
+            for rank, result in enumerate(results, start=1):
+                doc_id = result.get("doc_id")
+                if doc_id is None:
+                    continue
+                if doc_id not in merged:
+                    merged[doc_id] = dict(result)
+                    merged[doc_id]["matched_query_variants"] = []
+                    merged[doc_id]["expansion_rrf_score"] = 0.0
+                merged[doc_id]["expansion_rrf_score"] += 1.0 / (k + rank)
+                merged[doc_id]["matched_query_variants"].append(variant)
+
+        ranked = sorted(
+            merged.values(),
+            key=lambda r: (r.get("expansion_rrf_score", 0.0), r.get("score", 0.0)),
+            reverse=True,
+        )[:limit]
+        for result in ranked:
+            result["query_variants"] = query_variants
+            result["score"] = round(float(result.get("expansion_rrf_score", 0.0)), 4)
+            provenance = result.get("provenance")
+            if not isinstance(provenance, dict):
+                provenance = {}
+                result["provenance"] = provenance
+            provenance["expansion_rrf_score"] = result.get("expansion_rrf_score", 0.0)
+            provenance["matched_query_variants"] = result.get("matched_query_variants", [])
+        return ranked
+
+    def _extract_wiki_links(self, text: str) -> List[str]:
+        links = []
+        for raw in re.findall(r"\[\[([^\]]+)\]\]", text or ""):
+            target = raw.split("|", 1)[0].strip()
+            if target and target not in links:
+                links.append(target)
+        return links
+
+    def _fetch_linked_context(self, links: List[str], limit: int = 8) -> List[Dict]:
+        if not links:
+            return []
+        contexts = []
+        with self.db.cursor() as c:
+            for link in links[:limit]:
+                stem = link[:-3] if link.endswith(".md") else link
+                basename = stem.split("/")[-1]
+                row = None
+                for candidate in (stem, f"{stem}.md", basename, f"{basename}.md"):
+                    c.execute(
+                        """SELECT d.doc_id, d.path, ce.chunk_text
+                           FROM documents d
+                           JOIN chunk_embeddings ce ON ce.doc_id = d.doc_id
+                           WHERE d.path LIKE ?
+                           ORDER BY ce.chunk_id
+                           LIMIT 1""",
+                        (f"%{candidate}",),
+                    )
+                    row = c.fetchone()
+                    if row is not None:
+                        break
+                if row is not None:
+                    contexts.append({
+                        "link": link,
+                        "doc_id": row["doc_id"],
+                        "path": row["path"],
+                        "text": row["chunk_text"][:700],
+                    })
+        return contexts
+
+    def _add_neighborhood_summaries(self, results: List[Dict]) -> List[Dict]:
+        """Attach AFM summaries of 1-hop wikilinks; degrade to metadata."""
+        for result in results:
+            text = result.get("text") or result.get("full_document_text") or ""
+            if not text and result.get("doc_id") is not None:
+                text = self._fetch_full_document(result["doc_id"]) or ""
+            links = self._extract_wiki_links(text)
+            if not links:
+                continue
+            contexts = self._fetch_linked_context(links)
+            prompt = "\n\n".join(
+                f"{ctx['link']} ({ctx['path']}):\n{ctx['text']}" for ctx in contexts
+            )
+            summary = summarize_with_afm(prompt) if contexts else None
+            result["neighborhood_summary"] = {
+                "status": "ok" if summary else "unavailable",
+                "summary": summary,
+                "links": links,
+                "contexts": [
+                    {"link": ctx["link"], "doc_id": ctx["doc_id"], "path": ctx["path"]}
+                    for ctx in contexts
+                ],
+            }
+        return results
+
     def retrieve(
         self,
         query: str,
@@ -1153,6 +1275,8 @@ class RetrievalEngine:
         sort: Literal["semantic", "chronological"] = "semantic",
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        expand=True,
+        summarize_neighborhood: bool = False,
     ) -> List[Dict]:
         """
         Hybrid retrieval: FTS5 + FAISS semantic, RRF fusion, cross-encoder re-rank,
@@ -1181,11 +1305,75 @@ class RetrievalEngine:
                    None (default) — use internal FAISSIndex (bit-identical to pre-PR-3)
                    VectorBackend  — use this backend for semantic search
                    list           — fan-out via MultiBackend, merge with RRF
+            expand: False disables query expansion. True uses config.query_expand_default
+                    (default "rule"). "rule" and "afm" select explicit modes.
+            summarize_neighborhood: If true, summarize 1-hop wikilinks when AFM is available.
 
         Returns list of ranked results filtered to the requested depth tier.
         Existing callers that pass no depth receive identical results (snippet).
         With backend=None (default), results are bit-identical to pre-PR-3.
         """
+        query_variants = self._resolve_query_variants(query, expand)
+        if len(query_variants) > 1:
+            total_t0 = time.perf_counter()
+            per_variant = []
+            for variant in query_variants:
+                per_variant.append(self.retrieve(
+                    query=variant,
+                    limit=limit,
+                    agent_id=agent_id,
+                    update_access=False,
+                    budget_tokens=budget_tokens,
+                    depth=depth,
+                    include_superseded=include_superseded,
+                    include_rejected=include_rejected,
+                    include_drafts=include_drafts,
+                    backend=backend,
+                    layers=layers,
+                    sort=sort,
+                    start_date=start_date,
+                    end_date=end_date,
+                    expand=False,
+                    summarize_neighborhood=False,
+                ))
+            results = self._merge_expanded_results(per_variant, query_variants, limit)
+            if summarize_neighborhood:
+                results = self._add_neighborhood_summaries(results)
+            if update_access:
+                with self.db.cursor() as c:
+                    for result in results:
+                        if result.get("doc_id") is None:
+                            continue
+                        c.execute(
+                            """UPDATE documents
+                               SET access_count = access_count + 1, last_accessed = ?
+                               WHERE doc_id = ?""",
+                            (time.time(), result["doc_id"]),
+                        )
+            try:
+                self.last_trace_id = _trace_ring().add({
+                    "query": query,
+                    "variants": query_variants,
+                    "expansion": {"mode": expand, "variant_count": len(query_variants)},
+                    "final_ordering": [
+                        {
+                            "doc_id": r.get("doc_id"),
+                            "score": r.get("score"),
+                            "matched_query_variants": r.get("matched_query_variants", []),
+                        }
+                        for r in results
+                    ],
+                    "timing": {
+                        "total_ms": round((time.perf_counter() - total_t0) * 1000, 3),
+                    },
+                })
+                for result in results:
+                    result["trace_id"] = self.last_trace_id
+            except Exception as exc:
+                logger.debug("expanded trace capture failed: %s", exc)
+                self.last_trace_id = None
+            return results
+
         total_t0 = time.perf_counter()
         timing = {
             "fts_ms": 0.0,
@@ -1196,7 +1384,7 @@ class RetrievalEngine:
         }
         trace = {
             "query": query,
-            "variants": [query],
+            "variants": query_variants,
             "fts_hits": [],
             "semantic_hits": [],
             "rrf": {},
@@ -1474,6 +1662,7 @@ class RetrievalEngine:
                 raw["full_document_text"] = self._fetch_full_document(r["doc_id"])
 
             results.append(self._apply_depth(raw, depth))
+            results[-1]["query_variants"] = query_variants
 
             if update_access:
                 with self.db.cursor() as c:
@@ -1506,6 +1695,9 @@ class RetrievalEngine:
         except Exception as exc:
             logger.debug("trace capture failed: %s", exc)
             self.last_trace_id = None
+
+        if summarize_neighborhood:
+            results = self._add_neighborhood_summaries(results)
 
         return results
 
