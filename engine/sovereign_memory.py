@@ -407,7 +407,7 @@ def cmd_compile(args):
             dry_run = False
             i += 1
         else:
-            print("Usage: sovereign_memory.py compile --pass <session_distillation|synthesis|procedure_extraction> [--dry-run|--wet-run] [--vault <path>]")
+            print("Usage: sovereign_memory.py compile --pass <session_distillation|synthesis|procedure_extraction|reorganization|pruning> [--dry-run|--wet-run] [--vault <path>]")
             sys.exit(1)
 
     if not getattr(DEFAULT_CONFIG, "afm_loop_schedule", {}).get("enabled", False):
@@ -425,6 +425,8 @@ def cmd_compile(args):
         "session_distillation": "afm_passes.session_distillation",
         "synthesis": "afm_passes.synthesis",
         "procedure_extraction": "afm_passes.procedure_extraction",
+        "reorganization": "afm_passes.reorganization",
+        "pruning": "afm_passes.pruning",
     }
     if pass_name not in pass_runners:
         print(json.dumps({"status": "error", "error": f"unsupported pass: {pass_name}"}, indent=2))

@@ -1357,6 +1357,8 @@ def _handle_daemon_compile(params: dict, request_id: Any) -> dict:
             "session_distillation": "afm_passes.session_distillation",
             "synthesis": "afm_passes.synthesis",
             "procedure_extraction": "afm_passes.procedure_extraction",
+            "reorganization": "afm_passes.reorganization",
+            "pruning": "afm_passes.pruning",
         }
         if pass_name not in pass_runners:
             return _make_error(-32602, f"unsupported pass_name: {pass_name}", request_id)
