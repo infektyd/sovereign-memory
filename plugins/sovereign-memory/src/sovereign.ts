@@ -17,6 +17,8 @@ export interface RecallResponse {
   agent_id?: string;
   layer?: string;
   workspace_id?: string;
+  backend?: string;
+  backend_badge?: string;
 }
 
 export interface StatusReport {
@@ -168,6 +170,7 @@ function formatVaultContext(results: VaultSearchResult[]): string {
 }
 
 export function formatRecall(query: string, response: RecallResponse, vaultResults: VaultSearchResult[] = []): string {
+  const backendBadge = response.backend ?? response.backend_badge;
   const results = Array.isArray(response.results)
     ? JSON.stringify(response.results, null, 2)
     : response.results ?? "No recall results.";
@@ -181,7 +184,7 @@ export function formatRecall(query: string, response: RecallResponse, vaultResul
   const daemonLead = firstLine(compactDaemonResults(response.results));
   const sections = [
     "# Sovereign Recall",
-    `Query: ${query}`,
+    `Query: ${query}${backendBadge ? ` [${backendBadge}]` : ""}`,
     provenance ? `Provenance: ${provenance}` : undefined,
     "## AI Context Pack",
     formatVaultContext(vaultResults),

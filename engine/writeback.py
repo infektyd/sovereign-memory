@@ -82,6 +82,7 @@ class WriteBackMemory:
         category: str = "general",
         source_query: Optional[str] = None,
         source_doc_ids: Optional[List[int]] = None,
+        evidence_doc_ids: Optional[List[int]] = None,
         confidence: float = 1.0,
         supersedes: Optional[int] = None,
     ) -> int:
@@ -94,6 +95,7 @@ class WriteBackMemory:
             category: One of CATEGORIES keys
             source_query: The query that led to this learning
             source_doc_ids: Document IDs that informed this learning
+            evidence_doc_ids: PR-6 structured evidence document IDs
             confidence: How confident (0-1) the agent is
             supersedes: learning_id this replaces (versioning)
 
@@ -131,6 +133,15 @@ class WriteBackMemory:
                     (learning_id, supersedes),
                 )
 
+        self.add_derived_from_edges(
+            learning_id=learning_id,
+            agent_id=agent_id,
+            category=category,
+            content=content,
+            evidence_doc_ids=evidence_doc_ids or source_doc_ids,
+            created_at=now,
+        )
+
         logger.info(
             "Stored learning #%d [%s/%s]: %.60s...",
             learning_id, agent_id, category, content,
@@ -141,6 +152,90 @@ class WriteBackMemory:
             self._write_to_disk(learning_id, agent_id, category, content, now)
 
         return learning_id
+
+    def add_derived_from_edges(
+        self,
+        learning_id: int,
+        agent_id: str,
+        category: str,
+        content: str,
+        evidence_doc_ids: Optional[List[int]],
+        created_at: Optional[float] = None,
+    ) -> Optional[int]:
+        """
+        Represent an evidence-backed learning as a graph document and link it
+        to the documents it was derived from.
+
+        ``memory_links`` is document-to-document, so this creates a synthetic
+        ``learning://<id>`` document node only when evidence is supplied. This
+        keeps the schema additive and lets graph_export surface the edge
+        without a migration.
+        """
+        if not evidence_doc_ids:
+            return None
+
+        now = created_at or time.time()
+        valid_ids = []
+        seen = set()
+        for raw_id in evidence_doc_ids:
+            try:
+                doc_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if doc_id not in seen:
+                seen.add(doc_id)
+                valid_ids.append(doc_id)
+        if not valid_ids:
+            return None
+
+        path = f"learning://{learning_id}"
+        try:
+            with self.db.cursor() as c:
+                c.execute("SELECT doc_id FROM documents WHERE path = ?", (path,))
+                row = c.fetchone()
+                if row:
+                    learning_doc_id = row["doc_id"]
+                else:
+                    c.execute(
+                        """
+                        INSERT INTO documents
+                        (path, agent, sigil, last_modified, indexed_at, access_count,
+                         decay_score, whole_document, page_status, privacy_level,
+                         page_type, evidence_refs)
+                        VALUES (?, ?, ?, ?, ?, 0, 1.0, 0, 'accepted', 'safe',
+                                'learning', ?)
+                        """,
+                        (
+                            path,
+                            f"learning:{agent_id}",
+                            "L",
+                            now,
+                            now,
+                            json.dumps(valid_ids),
+                        ),
+                    )
+                    learning_doc_id = c.lastrowid
+
+                c.execute(
+                    "SELECT doc_id FROM documents WHERE doc_id IN ({})".format(
+                        ",".join("?" for _ in valid_ids)
+                    ),
+                    valid_ids,
+                )
+                existing = [row["doc_id"] for row in c.fetchall()]
+                for evidence_doc_id in existing:
+                    c.execute(
+                        """
+                        INSERT OR REPLACE INTO memory_links
+                        (source_doc_id, target_doc_id, link_type, weight, created_at)
+                        VALUES (?, ?, 'derived_from', 1.0, ?)
+                        """,
+                        (learning_doc_id, evidence_doc_id, now),
+                    )
+                return learning_doc_id
+        except Exception as exc:
+            logger.warning("Failed to add derived_from provenance edges: %s", exc)
+            return None
 
     def recall_learnings(
         self,
