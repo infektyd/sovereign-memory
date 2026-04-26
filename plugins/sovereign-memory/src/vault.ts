@@ -114,6 +114,7 @@ const VAULT_DIRS = [
   "schema",
   "logs",
   "inbox",
+  "outbox",
   ".obsidian",
 ];
 
@@ -511,6 +512,13 @@ export interface InboxEntry {
   payload: Record<string, unknown>;
 }
 
+export interface HandoffContextSnippet {
+  ref: string;
+  relativePath: string;
+  notePath: string;
+  snippet: string;
+}
+
 export async function writeInbox(
   vaultPath: string,
   slug: string,
@@ -557,6 +565,61 @@ export async function readPendingInbox(
     }
   }
   return entries;
+}
+
+function normalizeWikilinkRef(ref: string): string {
+  return ref
+    .replace(/^\[\[/, "")
+    .replace(/\]\]$/, "")
+    .split("|")[0]
+    .replace(/\.md$/, "")
+    .replace(/^\/+/, "");
+}
+
+async function resolveVaultRef(vaultPath: string, ref: string): Promise<HandoffContextSnippet | undefined> {
+  const normalized = normalizeWikilinkRef(ref);
+  const candidates = [
+    path.join(vaultPath, `${normalized}.md`),
+    path.join(vaultPath, normalized),
+  ];
+  for (const notePath of candidates) {
+    try {
+      const markdown = await readFile(notePath, "utf8");
+      const relativePath = path.relative(vaultPath, notePath);
+      return {
+        ref: normalized,
+        relativePath,
+        notePath,
+        snippet: snippetFor(markdown, queryTerms(normalized), 520),
+      };
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
+}
+
+export async function resolveInboxHandoffContext(
+  vaultPath: string,
+  entries: InboxEntry[],
+  limit = 8,
+): Promise<HandoffContextSnippet[]> {
+  const refs = new Set<string>();
+  for (const entry of entries) {
+    if (entry.payload.kind !== "handoff") continue;
+    const rawRefs = entry.payload.wikilink_refs;
+    if (!Array.isArray(rawRefs)) continue;
+    for (const ref of rawRefs) {
+      if (typeof ref === "string" && ref.trim()) refs.add(ref.trim());
+    }
+  }
+  const snippets: HandoffContextSnippet[] = [];
+  for (const ref of refs) {
+    const resolved = await resolveVaultRef(vaultPath, ref);
+    if (resolved) snippets.push(resolved);
+    if (snippets.length >= limit) break;
+  }
+  return snippets;
 }
 
 export async function clearInboxEntry(filePath: string): Promise<void> {
