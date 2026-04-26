@@ -29,7 +29,7 @@
 
 | # | PR | Phase(s) | Scope | Depends On | Status |
 |---|-----|----------|-------|------------|--------|
-| 01 | PR-1 | 0.1, 0.2, 0.3 | Schema versioning, model singletons, tiktoken | — | `[ ]` |
+| 01 | PR-1 | 0.1, 0.2, 0.3 | Schema versioning, model singletons, tiktoken | — | `[A]` |
 | 02 | PR-1b | 0.4, 0.5, 0.6 | Agent contract, vault contract, progressive disclosure | — | `[ ]` |
 | 03 | PR-2 | 1.1, 1.2, 1.3 | Persistent FAISS, result envelope, vault page schema | PR-1 | `[ ]` |
 | 04 | PR-3 | 2.1–2.5 | Storage abstraction (VectorBackend protocol) | PR-2 | `[ ]` |
