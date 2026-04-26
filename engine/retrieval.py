@@ -1277,6 +1277,7 @@ class RetrievalEngine:
         end_date: Optional[str] = None,
         expand=True,
         summarize_neighborhood: bool = False,
+        use_hyde: Optional[bool] = None,
     ) -> List[Dict]:
         """
         Hybrid retrieval: FTS5 + FAISS semantic, RRF fusion, cross-encoder re-rank,
@@ -1308,6 +1309,7 @@ class RetrievalEngine:
             expand: False disables query expansion. True uses config.query_expand_default
                     (default "rule"). "rule" and "afm" select explicit modes.
             summarize_neighborhood: If true, summarize 1-hop wikilinks when AFM is available.
+            use_hyde: Optional PR-8 override. None follows config.hyde_enabled.
 
         Returns list of ranked results filtered to the requested depth tier.
         Existing callers that pass no depth receive identical results (snippet).
@@ -1335,6 +1337,7 @@ class RetrievalEngine:
                     end_date=end_date,
                     expand=False,
                     summarize_neighborhood=False,
+                    use_hyde=use_hyde,
                 ))
             results = self._merge_expanded_results(per_variant, query_variants, limit)
             if summarize_neighborhood:
@@ -1505,6 +1508,65 @@ class RetrievalEngine:
             else:
                 merged = merged[:limit]
 
+            # PR-8: HyDE cold-query second pass. This runs at most once and
+            # gracefully returns the original pass if AFM is unavailable.
+            hyde_enabled = self.config.hyde_enabled if use_hyde is None else bool(use_hyde)
+            if hyde_enabled:
+                try:
+                    from hyde import (
+                        generate_hypothetical_answer,
+                        merge_hyde_results,
+                        should_trigger_hyde,
+                    )
+                    from scoring import compute_confidence
+
+                    probe_results = []
+                    for r in merged[:limit]:
+                        probe = dict(r)
+                        probe["confidence"] = compute_confidence(
+                            rrf_score=r.get("rrf_score"),
+                            cross_encoder_score=r.get("rerank_score"),
+                            decay_factor=r.get("decay_score"),
+                            db=self.db,
+                        )
+                        probe_results.append(probe)
+
+                    if should_trigger_hyde(
+                        probe_results,
+                        enabled=True,
+                        floor=self.config.hyde_confidence_floor,
+                    ):
+                        trace["hyde"]["triggered"] = True
+                        trace["hyde"]["confidence_floor"] = self.config.hyde_confidence_floor
+                        hypothetical = generate_hypothetical_answer(query, config=self.config)
+                        if hypothetical:
+                            trace["hyde"]["hypothetical_chars"] = len(hypothetical)
+                            hyde_fts = self._fts_search(hypothetical, rerank_k)
+                            hyde_semantic = self._semantic_search(hypothetical, rerank_k)
+                            hyde_merged = self._rrf_merge(hyde_fts, hyde_semantic, rerank_k)
+                            hyde_merged = self._filter_candidates(
+                                hyde_merged, layers, start_date, end_date
+                            )
+                            if self.config.reranker_enabled and self.reranker:
+                                hyde_merged = self._rerank(query, hyde_merged)
+                                hyde_merged = hyde_merged[:self.config.reranker_final_k]
+                            else:
+                                hyde_merged = hyde_merged[:limit]
+                            merged = merge_hyde_results(
+                                merged,
+                                hyde_merged,
+                                limit=rerank_k,
+                                rrf_k=self.config.rrf_k,
+                            )[:limit]
+                            trace["hyde"]["result_doc_ids"] = [
+                                r.get("doc_id") for r in hyde_merged
+                            ]
+                        else:
+                            trace["hyde"]["skipped"] = "afm_unavailable"
+                except Exception as exc:  # noqa: BLE001 - recall must not stack trace.
+                    logger.debug("HyDE skipped after retrieval pass: %s", exc)
+                    trace["hyde"]["skipped"] = "error"
+
         # Optional agent filter
         if agent_id:
             merged = [r for r in merged if r["agent"] == agent_id or r["agent"] == "unknown"]
@@ -1618,6 +1680,8 @@ class RetrievalEngine:
             }
             if "feedback_demote" in r:
                 provenance["feedback_demote"] = r.get("feedback_demote", 0.0)
+            if r.get("provenance", {}).get("via_hyde"):
+                provenance["via_hyde"] = True
 
             raw = {
                 "doc_id": r["doc_id"],

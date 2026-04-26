@@ -95,6 +95,10 @@ class SovereignConfig:
     # "rule" is default-on; "afm" is opt-in per request until eval-gated.
     query_expand_default: str = "rule"
 
+    # HyDE cold-query second pass (PR-8)
+    hyde_enabled: bool = True
+    hyde_confidence_floor: float = 0.4
+
     # Memory decay (Phase 8)
     decay_half_life_days: float = 7.0
     decay_min_score: float = 0.05

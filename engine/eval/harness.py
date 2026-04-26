@@ -18,7 +18,7 @@ Gate rule (documented here and in docs/contracts/WORKFLOWS.md):
     individual query class defined in the queries.jsonl "notes" field.
 
 Supported configs (defined in CONFIGS dict below):
-    baseline    — default search kwargs (empty dict)
+    baseline    — no PR-8 HyDE second pass
     with-expand — {"expand": True} (reserved for PR-7 query expansion)
     with-hyde   — {"use_hyde": True} (reserved for PR-8 HyDE retrieval)
 
@@ -47,16 +47,16 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 # ---------------------------------------------------------------------------
 
 CONFIGS: Dict[str, Dict[str, Any]] = {
-    "baseline": {},
+    "baseline": {"use_hyde": False},
     "with-expand": {"expand": True},     # reserved for PR-7 — no-op today
-    "with-hyde": {"use_hyde": True},      # reserved for PR-8 — no-op today
+    "with-hyde": {"use_hyde": True},      # PR-8 HyDE cold-query second pass
 }
 
 # Known kwargs accepted by RetrievalEngine.retrieve(); anything else is stripped.
 _KNOWN_RETRIEVE_KWARGS = {
     "limit", "agent_id", "update_access", "budget_tokens",
     "depth", "include_superseded", "include_rejected", "include_drafts",
-    "expand",
+    "expand", "use_hyde",
 }
 
 # ---------------------------------------------------------------------------
