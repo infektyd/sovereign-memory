@@ -61,8 +61,8 @@
 | PR-7 | W6 | MERGED | `.claude/worktrees/pr-07-query-expansion` | `pr-07-query-expansion` | `ccc60ae` | Merged into orchestration as `c6bc45e`. Worker concern: npm unavailable in isolated worktree; wave-level npm verification covers this. |
 | PR-8 | W6 | MERGED | `.claude/worktrees/pr-08-hyde` | `pr-08-hyde` | `ad72008` | Merged into orchestration as `c2206ed`; additive conflicts resolved in `WORKTREE_STATE.md`, `config.py`, `eval/harness.py`, and `retrieval.py`. |
 | PR-15 | W6 | MERGED | `.claude/worktrees/pr-15-quant-semantic` | `pr-15-quant-semantic` | `f3085c1` | Merged into orchestration as `caee7fe`; additive conflicts resolved in `WORKTREE_STATE.md` and `eval/harness.py`. Worker concern: live FAISS unavailable, mock eval used. |
-| PR-10 | W7 | QUEUED | — | — | — | |
-| PR-11 | W7 | QUEUED | — | — | — | |
+| PR-10 | W7 | IN_FLIGHT | `.claude/worktrees/pr-10-inbox-handoff` | `pr-10-inbox-handoff` | `262cccd` | Dispatched from W6-verified orchestration HEAD. |
+| PR-11 | W7 | IN_FLIGHT | `.claude/worktrees/pr-11-observability` | `pr-11-observability` | `262cccd` | Dispatched from W6-verified orchestration HEAD. |
 | PR-12 | W8 | QUEUED | — | — | — | |
 | PR-13 | W9 | QUEUED | — | — | — | |
 | PR-14 | W10 | QUEUED | — | — | — | |
@@ -202,3 +202,4 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T18:44Z | W6 dispatch checkpoint: PR-7, PR-8, and PR-15 worktrees created off W5-complete orchestration HEAD `6c39436`; tracker marked all three `[A]`; implementers queued for parallel work. |
 | 2026-04-26T18:57Z | W6 merge: PR-7 merged cleanly as `c6bc45e`; PR-8 merged as `c2206ed` after additive conflicts; PR-15 merged as `caee7fe` after additive conflicts. Focused W6 tests `pytest -q engine/test_pr7_query_expansion.py engine/test_pr8_hyde.py engine/test_pr15_quant_semantic.py engine/test_pr4_eval_harness.py` passed: 57 passed. |
 | 2026-04-26T19:03Z | W6 verification passed on orchestration: `cd engine && pytest -q` 190 passed / 3 skipped; `cd plugins/sovereign-memory && npm test` 29/29 passed; `npm run smoke:hook` returned valid envelope; migration safety on `/tmp/migration_check_w6.db` preserved 292 documents and 711 chunks, `PRAGMA user_version = 6`. |
+| 2026-04-26T19:08Z | W7 dispatch checkpoint: PR-10 and PR-11 worktrees created off W6-verified orchestration HEAD `262cccd`; tracker marked both `[A]`; implementers queued for parallel work. |
