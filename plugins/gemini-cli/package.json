@@ -1,0 +1,23 @@
+{
+  "name": "gemini-cli-gemini-cli-plugin",
+  "version": "0.1.0",
+  "description": "Local Gemini CLI plugin bridge for Gemini CLI Memory.",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "console": "npm run build && node dist/ui-server.js",
+    "design:lint": "npx @google/design.md lint ../../DESIGN.md",
+    "test:live:prepare": "npm run build && node tests/live-prepare-task.mjs",
+    "smoke:status": "npm run build && node dist/cli.js status"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
