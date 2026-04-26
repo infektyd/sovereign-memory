@@ -35,6 +35,11 @@ class TraceRing:
     def add(self, entry: Dict[str, Any]) -> str:
         """Store an entry and return its trace id."""
         trace_id = self._new_id()
+        self.put(trace_id, entry)
+        return trace_id
+
+    def put(self, trace_id: str, entry: Dict[str, Any]) -> str:
+        """Store an entry under a caller-provided trace id."""
         stored = dict(entry)
         stored["trace_id"] = trace_id
         size = self._entry_size(stored)
@@ -50,6 +55,8 @@ class TraceRing:
             size = self._entry_size(stored)
 
         with self._lock:
+            if trace_id in self._entries:
+                self._approx_bytes -= self._sizes.pop(trace_id, 0)
             self._entries[trace_id] = stored
             self._sizes[trace_id] = size
             self._approx_bytes += size

@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { CLAUDECODE_AGENT_ID, DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
-import { formatRecall, handoffMemory, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
+import { compileVault, formatRecall, handoffMemory, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
 import { buildHandoffPacket, extractScarTissue, prepareOutcome, prepareTask } from "./task.js";
 import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 import { wrapEnvelope } from "./agent_envelope.js";
@@ -118,6 +118,28 @@ server.registerTool(
   async ({ vaultPath }) => {
     const report = await statusAndAudit(vaultPath ?? DEFAULT_VAULT_PATH);
     return textResult(JSON.stringify(report, null, 2));
+  },
+);
+
+server.registerTool(
+  "sovereign_compile_vault",
+  {
+    title: "Sovereign Compile Vault",
+    description:
+      "Run an opt-in AFM compile pass against the vault. Defaults to dry-run and only drafts pages for review.",
+    inputSchema: {
+      passName: z.enum(["session_distillation"]).optional(),
+      vaultPath: z.string().optional(),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  async ({ passName, vaultPath, dryRun }) => {
+    const result = await compileVault({
+      passName: passName ?? "session_distillation",
+      vaultPath: vaultPath ?? DEFAULT_VAULT_PATH,
+      dryRun: dryRun ?? true,
+    });
+    return textResult(JSON.stringify(result, null, 2));
   },
 );
 
