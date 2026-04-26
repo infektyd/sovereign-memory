@@ -34,11 +34,11 @@
 | 03 | PR-2 | 1.1, 1.2, 1.3 | Persistent FAISS, result envelope, vault page schema | PR-1 | `[x]` |
 | 04 | PR-3 | 2.1–2.5 | Storage abstraction (VectorBackend protocol) | PR-2 | `[x]` |
 | 05 | PR-4 | 3.0 | Eval harness, policy docs, workflows | PR-2 | `[x]` |
-| 06 | PR-5 | 3.1, 3.2 | Cross-encoder cache, layer-aware retrieval | PR-2 | `[A]` |
+| 06 | PR-5 | 3.1, 3.2 | Cross-encoder cache, layer-aware retrieval | PR-2 | `[x]` |
 | 07 | PR-6 | 3.3 | Structured learnings + contradiction detection | PR-2 | `[x]` |
 | 08 | PR-7 | 3.4 | Query expansion (rule-based + AFM opt-in) | PR-4 (eval gate) | `[ ]` |
 | 09 | PR-8 | 3.5 | HyDE for cold queries | PR-4 (eval gate) | `[ ]` |
-| 10 | PR-9 | 4.1, 4.2 | Negative feedback + per-query trace | PR-2 | `[A]` |
+| 10 | PR-9 | 4.1, 4.2 | Negative feedback + per-query trace | PR-2 | `[x]` |
 | 11 | PR-10 | 4.6 | Agent inbox/outbox + handoff spec | PR-1b, PR-2 | `[ ]` |
 | 12 | PR-11 | 4.5, 5.x | Provenance edges, health, stats, hygiene | PR-2, PR-6 | `[ ]` |
 | 13 | PR-12 | 6 PR-A | AFM scheduler + session distillation pass | PR-11 | `[ ]` |

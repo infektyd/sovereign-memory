@@ -126,7 +126,11 @@ class SovereignDB:
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_doc_path ON documents(path)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_doc_agent ON documents(agent)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_doc_layer ON documents(layer)")
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_doc_layer ON documents(layer)")
+        except sqlite3.OperationalError as e:
+            if "no such column: layer" not in str(e).lower():
+                raise
 
         # === Chunk Embeddings (one doc → many chunks) ===
         # V3.1: No more 'compressed' or 'norm' columns.
@@ -147,7 +151,11 @@ class SovereignDB:
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk_embeddings(doc_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_layer ON chunk_embeddings(layer)")
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_layer ON chunk_embeddings(layer)")
+        except sqlite3.OperationalError as e:
+            if "no such column: layer" not in str(e).lower():
+                raise
 
         # === Memory Links ===
         c.execute("""
@@ -327,6 +335,9 @@ class SovereignDB:
                     try:
                         from migrations import run_migrations
                         run_migrations(conn)
+                        conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_layer ON documents(layer)")
+                        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunk_layer ON chunk_embeddings(layer)")
+                        conn.commit()
                     except Exception as e:
                         import logging
                         logging.getLogger("sovereign.db").warning(
