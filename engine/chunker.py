@@ -14,6 +14,7 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 
 from config import SovereignConfig, DEFAULT_CONFIG
+from tokens import count_tokens
 
 
 # Sentence boundary regex: match end-of-sentence punctuation followed by space
@@ -346,11 +347,11 @@ class MarkdownChunker:
         return len(subtext.split())
 
     def _filter_and_finalize(self, chunks: List[Chunk]) -> List[Chunk]:
-        """Apply min_tokens filter and reindex."""
+        """Apply min_tokens filter and reindex using tiktoken-accurate token counts."""
         result = []
         for chunk in chunks:
-            word_count = len(chunk.text.split())
-            if word_count < self.min_tokens:
+            token_count = count_tokens(chunk.text)
+            if token_count < self.min_tokens:
                 continue  # Drop undersized chunks
             result.append(chunk)
 

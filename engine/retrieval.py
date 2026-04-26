@@ -43,32 +43,15 @@ class RetrievalEngine:
 
     @property
     def model(self):
-        """Lazy-load embedding model."""
-        if self._model is None:
-            import os
-            os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(self.config.embedding_model)
-            except ImportError:
-                self._model = False
-        return self._model if self._model is not False else None
+        """Return the process-wide embedding model singleton."""
+        from models import get_embedder
+        return get_embedder()
 
     @property
     def reranker(self):
-        """Lazy-load cross-encoder re-ranker."""
-        if self._reranker is None and self.config.reranker_enabled:
-            try:
-                from sentence_transformers import CrossEncoder
-                self._reranker = CrossEncoder(self.config.reranker_model)
-                logger.info("Cross-encoder loaded: %s", self.config.reranker_model)
-            except ImportError:
-                logger.warning("sentence-transformers CrossEncoder not available — skipping re-ranking")
-                self._reranker = False
-            except Exception as e:
-                logger.warning("Failed to load cross-encoder: %s", e)
-                self._reranker = False
-        return self._reranker if self._reranker is not False else None
+        """Return the process-wide cross-encoder singleton."""
+        from models import get_cross_encoder
+        return get_cross_encoder()
 
     @property
     def tokenizer(self):
