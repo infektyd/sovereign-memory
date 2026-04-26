@@ -10,8 +10,11 @@ Phase 2 updates:
 """
 
 import re
+import logging
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
+
+import numpy as np
 
 from config import SovereignConfig, DEFAULT_CONFIG
 from tokens import count_tokens
@@ -19,6 +22,14 @@ from tokens import count_tokens
 
 # Sentence boundary regex: match end-of-sentence punctuation followed by space
 _SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+
+logger = logging.getLogger("sovereign.chunker")
+
+
+def get_embedder():
+    """Lazy embedder import for optional semantic chunk merging."""
+    from models import get_embedder as _get_embedder
+    return _get_embedder()
 
 
 @dataclass
@@ -54,6 +65,7 @@ class MarkdownChunker:
         self.max_tokens = config.max_tokens          # 1024
         self.sentence_snap = config.sentence_snap    # True
         self.code_treatment = config.code_treatment  # "single_chunk"
+        self.semantic_merge = getattr(config, "chunking_semantic_merge", False)
 
     # ------------------------------------------------------------------
     # Public API
@@ -66,7 +78,7 @@ class MarkdownChunker:
         Returns list of Chunk objects with heading context and metadata flags.
         """
         if self.strategy == "sliding":
-            return self._filter_and_finalize(self._sliding_window(text))
+            return self._finalize(self._sliding_window(text))
 
         # Markdown-aware chunking
         sections = self._split_sections(text)
@@ -142,9 +154,9 @@ class MarkdownChunker:
 
         # Fallback: if no sections found (no headings), use sliding window
         if not chunks:
-            return self._filter_and_finalize(self._sliding_window(text))
+            return self._finalize(self._sliding_window(text))
 
-        return self._filter_and_finalize(chunks)
+        return self._finalize(chunks)
 
     # ------------------------------------------------------------------
     # Section parsing
@@ -360,6 +372,93 @@ class MarkdownChunker:
             chunk.chunk_index = i
 
         return result
+
+    def _finalize(self, chunks: List[Chunk]) -> List[Chunk]:
+        """Apply normal finalization and the optional semantic merge post-pass."""
+        chunks = self._filter_and_finalize(chunks)
+        if self.semantic_merge:
+            chunks = self._semantic_merge_chunks(chunks)
+            chunks = self._filter_and_finalize(chunks)
+        return chunks
+
+    def _semantic_merge_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
+        """Merge adjacent same-heading chunks when their embeddings are very close."""
+        if len(chunks) < 2:
+            return chunks
+
+        try:
+            embedder = get_embedder()
+        except Exception as exc:
+            logger.warning("Semantic chunk merge disabled: embedder unavailable (%s)", exc)
+            return chunks
+
+        if embedder is None:
+            logger.warning("Semantic chunk merge disabled: embedder unavailable")
+            return chunks
+
+        merged: List[Chunk] = []
+        current = chunks[0]
+        current_vec = None
+
+        for nxt in chunks[1:]:
+            if current.heading_path != nxt.heading_path:
+                merged.append(current)
+                current = nxt
+                current_vec = None
+                continue
+
+            candidate_text = f"{current.text}\n\n{nxt.text}".strip()
+            if count_tokens(candidate_text) > self.max_tokens:
+                merged.append(current)
+                current = nxt
+                current_vec = None
+                continue
+
+            try:
+                if current_vec is None:
+                    current_vec = self._encode_for_merge(embedder, current.text)
+                next_vec = self._encode_for_merge(embedder, nxt.text)
+                similarity = self._cosine(current_vec, next_vec)
+            except Exception as exc:
+                logger.warning("Semantic chunk merge skipped for a pair: %s", exc)
+                merged.append(current)
+                current = nxt
+                current_vec = None
+                continue
+
+            if similarity > 0.9:
+                current = Chunk(
+                    text=candidate_text,
+                    heading=current.heading,
+                    heading_path=current.heading_path,
+                    chunk_index=current.chunk_index,
+                    is_code=current.is_code or nxt.is_code,
+                    truncated=current.truncated or nxt.truncated,
+                )
+                current_vec = self._average_vectors(current_vec, next_vec)
+            else:
+                merged.append(current)
+                current = nxt
+                current_vec = None
+
+        merged.append(current)
+        return merged
+
+    @staticmethod
+    def _encode_for_merge(embedder, text: str) -> np.ndarray:
+        vec = embedder.encode(text)
+        return np.asarray(vec, dtype=np.float32)
+
+    @staticmethod
+    def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom < 1e-8:
+            return 0.0
+        return float(np.dot(a, b) / denom)
+
+    @staticmethod
+    def _average_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return ((a + b) / 2.0).astype(np.float32)
 
     def _sliding_window(self, text: str) -> List[Chunk]:
         """Fallback: V3-style sliding window with sentence snapping."""

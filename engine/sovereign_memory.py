@@ -4,7 +4,7 @@ Sovereign Memory V3.1 — Main Entry Point.
 
 Usage:
     # Index everything (vault + wiki)
-    python sovereign_memory.py index [--verbose]
+    python sovereign_memory.py index [--verbose] [--semantic-merge]
 
     # Index only vault or only wiki
     python sovereign_memory.py index --vault-only
@@ -42,19 +42,30 @@ Usage:
 import sys
 import json
 import logging
+from pathlib import Path
+
+ENGINE_DIR = str(Path(__file__).resolve().parent)
+if ENGINE_DIR not in sys.path:
+    sys.path.insert(0, ENGINE_DIR)
 
 from config import DEFAULT_CONFIG
 from db import SovereignDB
 
 
 def cmd_index(args):
+    from dataclasses import replace
     from index_all import index_all
     verbose = "--verbose" in args or "-v" in args
     vault_only = "--vault-only" in args
     wiki_only = "--wiki-only" in args
+    semantic_merge = "--semantic-merge" in args
     do_vault = not wiki_only
     do_wiki = not vault_only
-    result = index_all(vault=do_vault, wiki=do_wiki, verbose=verbose)
+    config = (
+        replace(DEFAULT_CONFIG, chunking_semantic_merge=True)
+        if semantic_merge else DEFAULT_CONFIG
+    )
+    result = index_all(config=config, vault=do_vault, wiki=do_wiki, verbose=verbose)
     print(json.dumps(result, indent=2))
 
 

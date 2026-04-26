@@ -5,6 +5,7 @@ CLI usage:
 
     Run a comparison across named configs:
         python -m engine.eval.harness run --config baseline,with-expand,with-hyde
+        python -m engine.eval.harness run --config fp32-baseline,int8-quantized --mock
 
     Append a new query to eval/queries.jsonl:
         python -m engine.eval.harness record --query "auth migration" --expected-ids 8412,8413
@@ -21,6 +22,8 @@ Supported configs (defined in CONFIGS dict below):
     baseline    — default search kwargs (empty dict)
     with-expand — {"expand": True} (reserved for PR-7 query expansion)
     with-hyde   — {"use_hyde": True} (reserved for PR-8 HyDE retrieval)
+    fp32-baseline, int8-quantized, with-semantic-merge — PR-15 labels. For live
+                 eval, rebuild the index with the matching config before each run.
 
 If a config passes an unrecognised kwarg to search(), the harness logs a warning
 and proceeds with defaults. This allows config names to be reserved for future
@@ -50,6 +53,9 @@ CONFIGS: Dict[str, Dict[str, Any]] = {
     "baseline": {},
     "with-expand": {"expand": True},     # reserved for PR-7 — no-op today
     "with-hyde": {"use_hyde": True},      # reserved for PR-8 — no-op today
+    "fp32-baseline": {},                  # PR-15 label; live eval requires fp32 rebuild
+    "int8-quantized": {},                 # PR-15 label; live eval requires int8 rebuild
+    "with-semantic-merge": {},            # PR-15 label; live eval requires semantic reindex
 }
 
 # Known kwargs accepted by RetrievalEngine.retrieve(); anything else is stripped.

@@ -6,6 +6,7 @@ PR-2: Save/load FAISS index to/from disk with a manifest file.
 The manifest captures:
   - embedding_model: which model produced the vectors
   - vector_dim: expected embedding dimension
+  - embedding_quantization: FAISS-side quantization mode ("fp32" or "int8")
   - chunk_id_order: ordered list of chunk_ids (position → chunk_id)
   - chunk_count: total vectors
   - db_checksum: hash of live DB state (count, max rowid, max updated_at)
@@ -74,6 +75,7 @@ def save(
     embedding_model: str,
     vector_dim: int,
     db_checksum: str,
+    embedding_quantization: str = "fp32",
 ) -> bool:
     """
     Save a FAISS index + manifest to disk.
@@ -86,6 +88,8 @@ def save(
                        The .faiss file is written alongside it.
         embedding_model: Model name string (recorded in manifest).
         vector_dim: Dimension of each vector.
+        embedding_quantization: FAISS-side quantization mode. SQLite vectors
+                                remain float32 regardless of this value.
         db_checksum: Pre-computed DB fingerprint.
 
     Returns:
@@ -114,6 +118,7 @@ def save(
         manifest = {
             "embedding_model": embedding_model,
             "vector_dim": vector_dim,
+            "embedding_quantization": embedding_quantization,
             "chunk_id_order": chunk_ids,
             "chunk_count": len(chunk_ids),
             "db_checksum": db_checksum,
@@ -138,6 +143,7 @@ def load(
     expected_db_checksum: str,
     expected_model: str = "",
     expected_dim: int = 0,
+    expected_quantization: str = "",
 ) -> Optional[Tuple]:
     """
     Load a FAISS index from disk if the manifest checksum matches.
@@ -147,6 +153,7 @@ def load(
         expected_db_checksum: Current DB fingerprint (from compute_db_checksum).
         expected_model: If non-empty, must match manifest.embedding_model.
         expected_dim: If > 0, must match manifest.vector_dim.
+        expected_quantization: If non-empty, must match manifest.embedding_quantization.
 
     Returns:
         (faiss_index_or_None, chunk_ids, vectors) on success.
@@ -186,6 +193,13 @@ def load(
         logger.info(
             "FAISS cache miss — dim changed (%d → %d)",
             manifest.get("vector_dim"), expected_dim,
+        )
+        return None
+    saved_quantization = manifest.get("embedding_quantization", "fp32")
+    if expected_quantization and saved_quantization != expected_quantization:
+        logger.info(
+            "FAISS cache miss — quantization changed (%s → %s); rebuild required",
+            saved_quantization, expected_quantization,
         )
         return None
 

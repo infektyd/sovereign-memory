@@ -96,9 +96,15 @@ class FAISSIndex:
         faiss = self._faiss
 
         # Normalize for cosine similarity (FAISS inner product on normalized = cosine)
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms = np.where(norms < 1e-8, 1.0, norms)
-        normalized = (embeddings / norms).astype(np.float32)
+        normalized = self._normalize(embeddings)
+
+        if getattr(self.config, "embedding_quantization", "fp32") == "int8":
+            if self._build_quantized_index(faiss, normalized, n):
+                return
+            logger.warning(
+                "embedding_quantization=int8 requested, but this FAISS build "
+                "does not support the required scalar quantized index; using fp32"
+            )
 
         should_hnsw = (
             self.config.faiss_index_type == "hnsw"
@@ -122,6 +128,54 @@ class FAISSIndex:
             self._index = index
             self._current_type = "flat"
             logger.info("Built Flat index: %d vectors", n)
+
+    @staticmethod
+    def _normalize(embeddings: np.ndarray) -> np.ndarray:
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms = np.where(norms < 1e-8, 1.0, norms)
+        return (embeddings / norms).astype(np.float32)
+
+    def _build_quantized_index(self, faiss, normalized: np.ndarray, n: int) -> bool:
+        """Build optional int8 scalar quantization, with fp32 fallback on failure."""
+        quantizer = getattr(faiss, "ScalarQuantizer", None)
+        quantizer_type = getattr(quantizer, "QT_8bit", None)
+        metric = getattr(faiss, "METRIC_INNER_PRODUCT", 0)
+        if quantizer_type is None:
+            return False
+
+        hnsw_sq = getattr(faiss, "IndexHNSWSQ", None)
+        if hnsw_sq is not None:
+            try:
+                index = hnsw_sq(self.dim, quantizer_type, self.config.hnsw_m, metric)
+                if hasattr(index, "hnsw"):
+                    index.hnsw.efConstruction = self.config.hnsw_ef_construction
+                    index.hnsw.efSearch = self.config.hnsw_ef_search
+                index.add(normalized)
+                self._index = index
+                self._current_type = "hnsw-sq-int8"
+                logger.info(
+                    "Built int8 HNSW scalar-quantized index: %d vectors (M=%d)",
+                    n, self.config.hnsw_m,
+                )
+                return True
+            except Exception as exc:
+                logger.warning("IndexHNSWSQ unavailable or failed: %s", exc)
+
+        scalar_quantizer = getattr(faiss, "IndexScalarQuantizer", None)
+        if scalar_quantizer is not None:
+            try:
+                index = scalar_quantizer(self.dim, quantizer_type, metric)
+                if hasattr(index, "is_trained") and not index.is_trained:
+                    index.train(normalized)
+                index.add(normalized)
+                self._index = index
+                self._current_type = "sq-int8"
+                logger.info("Built int8 scalar-quantized index: %d vectors", n)
+                return True
+            except Exception as exc:
+                logger.warning("IndexScalarQuantizer unavailable or failed: %s", exc)
+
+        return False
 
     def add(self, chunk_id: int, embedding: np.ndarray) -> None:
         """
@@ -286,6 +340,7 @@ class FAISSIndex:
             expected_db_checksum=checksum,
             expected_model=self.config.embedding_model,
             expected_dim=self.config.embedding_dim,
+            expected_quantization=getattr(self.config, "embedding_quantization", "fp32"),
         )
         if result is None:
             return False
@@ -300,7 +355,13 @@ class FAISSIndex:
             self._reverse_map = {cid: i for i, cid in enumerate(chunk_ids)}
             # We do not have raw vectors; set to empty (rebuild will re-load if needed)
             self._vectors = []
-            self._current_type = "flat" if not hasattr(faiss_index, "hnsw") else "hnsw"
+            quantization = getattr(self.config, "embedding_quantization", "fp32")
+            if quantization == "int8" and hasattr(faiss_index, "hnsw"):
+                self._current_type = "hnsw-sq-int8"
+            elif quantization == "int8":
+                self._current_type = "sq-int8"
+            else:
+                self._current_type = "flat" if not hasattr(faiss_index, "hnsw") else "hnsw"
             logger.info(
                 "FAISS index restored from disk cache: %d vectors", len(chunk_ids)
             )
@@ -345,5 +406,6 @@ class FAISSIndex:
             manifest_path=manifest,
             embedding_model=self.config.embedding_model,
             vector_dim=self.config.embedding_dim,
+            embedding_quantization=getattr(self.config, "embedding_quantization", "fp32"),
             db_checksum=checksum,
         )
