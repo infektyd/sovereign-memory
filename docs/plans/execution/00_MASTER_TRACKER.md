@@ -39,8 +39,8 @@
 | 08 | PR-7 | 3.4 | Query expansion (rule-based + AFM opt-in) | PR-4 (eval gate) | `[x]` |
 | 09 | PR-8 | 3.5 | HyDE for cold queries | PR-4 (eval gate) | `[x]` |
 | 10 | PR-9 | 4.1, 4.2 | Negative feedback + per-query trace | PR-2 | `[x]` |
-| 11 | PR-10 | 4.6 | Agent inbox/outbox + handoff spec | PR-1b, PR-2 | `[A]` |
-| 12 | PR-11 | 4.5, 5.x | Provenance edges, health, stats, hygiene | PR-2, PR-6 | `[A]` |
+| 11 | PR-10 | 4.6 | Agent inbox/outbox + handoff spec | PR-1b, PR-2 | `[x]` |
+| 12 | PR-11 | 4.5, 5.x | Provenance edges, health, stats, hygiene | PR-2, PR-6 | `[x]` |
 | 13 | PR-12 | 6 PR-A | AFM scheduler + session distillation pass | PR-11 | `[ ]` |
 | 14 | PR-13 | 6 PR-B | Synthesis + procedure extraction passes | PR-12 | `[ ]` |
 | 15 | PR-14 | 6 PR-C | Reorganization + pruning passes | PR-13 | `[ ]` |
