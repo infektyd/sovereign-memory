@@ -4,7 +4,7 @@
 >
 > This file is the execution dashboard. Each checkbox maps to one shippable, revertible PR.
 > Phase docs contain the full technical spec for each PR.
-> 
+>
 > **Subagent-Driven Development / Two-Stage Review**
 > - `[ ]` Pending
 > - `[A]` In Progress (Subagent dispatched)
