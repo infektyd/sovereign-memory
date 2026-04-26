@@ -77,7 +77,10 @@ def _contradiction_candidates(draft: dict, writeback: Any = None) -> List[dict]:
 
 def _frontmatter(draft: dict, created: str, expires_at: str, gate_status: str) -> str:
     sources = "\n".join(f"  - {source}" for source in draft.get("sources", []))
-    return (
+    citations = "\n".join(f"  - {citation}" for citation in draft.get("citations", []))
+    prompt_version = draft.get("prompt_version")
+    tags = ", ".join(str(tag) for tag in draft.get("tags", []) if str(tag).strip())
+    text = (
         "---\n"
         f"title: {draft['title']}\n"
         f"type: {draft.get('kind', 'concept')}\n"
@@ -89,10 +92,15 @@ def _frontmatter(draft: dict, created: str, expires_at: str, gate_status: str) -
         f"created: {created}\n"
         f"expires_at: {expires_at}\n"
         f"gate_status: {gate_status}\n"
-        "sources:\n"
-        f"{sources}\n"
-        "---\n\n"
     )
+    if prompt_version:
+        text += f"prompt_version: {prompt_version}\n"
+    if tags:
+        text += f"tags: [{tags}]\n"
+    text += "sources:\n" + f"{sources}\n"
+    if citations:
+        text += f"citations:\n{citations}\n"
+    return text + "---\n\n"
 
 
 def _write_one(vault: Path, draft: dict, writeback: Any = None) -> dict:
@@ -102,6 +110,7 @@ def _write_one(vault: Path, draft: dict, writeback: Any = None) -> dict:
     section = draft.get("section") or f"{draft.get('kind', 'concept')}s"
     rel = Path("wiki") / section / f"{_utc()[:10].replace('-', '')}-{_slugify(draft['title'])}-{draft['page_id'][-6:]}.md"
     path = vault / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
     created = _utc()
     expires_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 14 * 86400))
     with _page_lock(draft["page_id"]):
@@ -113,6 +122,8 @@ def _write_one(vault: Path, draft: dict, writeback: Any = None) -> dict:
             + "\n".join(f"- `{source}`" for source in draft.get("sources", []))
             + "\n"
         )
+        if draft.get("citations"):
+            body += "\n## Citations\n\n" + "\n".join(f"- `{citation}`" for citation in draft.get("citations", [])) + "\n"
         if blockers or contradictions:
             body += "\n## Gate Notes\n\n"
             for blocker in blockers:

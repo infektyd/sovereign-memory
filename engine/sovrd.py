@@ -1353,13 +1353,18 @@ def _handle_daemon_compile(params: dict, request_id: Any) -> dict:
         }, request_id)
 
     try:
-        if pass_name != "session_distillation":
+        pass_runners = {
+            "session_distillation": "afm_passes.session_distillation",
+            "synthesis": "afm_passes.synthesis",
+            "procedure_extraction": "afm_passes.procedure_extraction",
+        }
+        if pass_name not in pass_runners:
             return _make_error(-32602, f"unsupported pass_name: {pass_name}", request_id)
         trace_id = f"afm-{uuid.uuid4().hex[:12]}"
         db = SovereignDB(DEFAULT_CONFIG)
-        from afm_passes.session_distillation import run as run_session_distillation
+        pass_module = __import__(pass_runners[pass_name], fromlist=["run"])
 
-        result = run_session_distillation(
+        result = pass_module.run(
             db,
             DEFAULT_CONFIG,
             vault_path=vault_path,
@@ -1385,6 +1390,7 @@ def _handle_daemon_compile(params: dict, request_id: Any) -> dict:
                 "pass_name": pass_name,
                 "inputs": result.get("inputs"),
                 "prompt": result.get("prompt"),
+                "prompt_version": result.get("prompt_version"),
                 "output": result.get("output"),
                 "draft_page_ids": [draft.get("page_id") for draft in result.get("drafts", [])],
                 "dry_run": dry_run,
