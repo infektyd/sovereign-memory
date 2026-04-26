@@ -37,6 +37,9 @@ Usage:
     # Sync / inspect vector backends
     python sovereign_memory.py vectors --sync
     python sovereign_memory.py vectors --status
+
+    # Vault/wiki hygiene report
+    python -m engine.sovereign_memory hygiene --vault <path>
 """
 
 import sys
@@ -366,6 +369,24 @@ def cmd_vectors(args):
         db.close()
 
 
+def cmd_hygiene(args):
+    """Run read-only vault/wiki hygiene checks and write logs/hygiene reports."""
+    from hygiene import run_hygiene_report
+
+    vault = DEFAULT_CONFIG.vault_path
+    if "--vault" in args:
+        idx = args.index("--vault")
+        if idx + 1 >= len(args):
+            print("Usage: sovereign_memory.py hygiene --vault <path>")
+            sys.exit(1)
+        vault = args[idx + 1]
+    elif args:
+        vault = args[0]
+
+    summary = run_hygiene_report(vault)
+    print(json.dumps(summary, indent=2))
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -391,6 +412,7 @@ def main():
         "stats": cmd_stats,
         "faiss": cmd_faiss,
         "vectors": cmd_vectors,
+        "hygiene": cmd_hygiene,
     }
 
     if command in commands:

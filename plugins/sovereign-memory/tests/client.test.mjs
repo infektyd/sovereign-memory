@@ -36,6 +36,16 @@ test("formatRecall returns concise markdown with query and provenance", () => {
   assert.match(formatted, /Use \/tmp\/sovereign.sock/);
 });
 
+test("formatRecall includes backend badge when recall reports backend provenance", () => {
+  const formatted = formatRecall("backend provenance", {
+    results: "### result.md (score=1.000)",
+    agent_id: "codex",
+    backend: "faiss-disk+qdrant",
+  });
+
+  assert.match(formatted, /\[faiss-disk\+qdrant\]/);
+});
+
 test("buildStatusReport includes vault, socket, AFM, and audit state", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "sm-status-"));
   try {

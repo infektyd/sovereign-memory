@@ -68,6 +68,7 @@ import time
 import threading
 import importlib.util
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -171,6 +172,8 @@ VERSION = "0.1.0"
 _start_time = 0.0
 _request_count = 0
 _dual_write_enabled = False
+_LATENCY_METHODS = ("search", "learn", "read", "embedding", "cross_encoder")
+_latencies = {name: deque(maxlen=100) for name in _LATENCY_METHODS}
 
 
 def _make_response(result: Any, request_id: Any = None) -> dict:
@@ -443,6 +446,65 @@ def _handle_daemon_handoff(params: dict, request_id: Any) -> dict:
         }, request_id)
 
 
+def _record_latency(method: str, duration_seconds: float) -> None:
+    """Record a duration in a tiny process-local rolling window."""
+    if method not in _latencies:
+        _latencies[method] = deque(maxlen=100)
+    _latencies[method].append(max(0.0, float(duration_seconds)))
+
+
+def _percentile(values, percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    weight = rank - low
+    return ordered[low] * (1 - weight) + ordered[high] * weight
+
+
+def _latency_snapshot() -> Dict[str, Dict[str, float]]:
+    snapshot = {}
+    for name in _LATENCY_METHODS:
+        values = list(_latencies.get(name, []))
+        snapshot[name] = {
+            "count": len(values),
+            "p50_ms": round(_percentile(values, 0.50) * 1000, 3),
+            "p95_ms": round(_percentile(values, 0.95) * 1000, 3),
+        }
+    return snapshot
+
+
+def _backend_badge(backends: Any) -> str:
+    if backends is None:
+        names = ["faiss-disk"]
+    elif isinstance(backends, str):
+        names = [backends]
+    elif isinstance(backends, (list, tuple)):
+        names = [str(item) for item in backends if item]
+    else:
+        names = [str(backends)]
+    return "+".join(names)
+
+
+def formatRecall(query: str, response: Dict[str, Any]) -> str:
+    """Python-side recall formatting with backend provenance badge."""
+    backend = response.get("backend") or response.get("backend_badge")
+    badge = f" [{backend}]" if backend else ""
+    results = response.get("results") or "No recall results."
+    if not isinstance(results, str):
+        results = json.dumps(results, indent=2)
+    return "\n\n".join([
+        "# Sovereign Recall",
+        f"Query: {query}{badge}",
+        "## Daemon Results",
+        results,
+    ])
+
+
 def _handle_ping(params: dict, request_id: Any) -> dict:
     return _make_response("pong", request_id)
 
@@ -493,6 +555,7 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     """
     global _request_count
     _request_count += 1
+    started_at = time.perf_counter()
 
     query = params.get("query", "")
     if not query:
@@ -547,6 +610,7 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             "agent_id": agent_id,
             "depth": depth,
             "count": len(results),
+            "backend": _backend_badge(_resolved_backend),
             "trace_id": getattr(engine, "last_trace_id", None),
             "query_variants": (
                 results[0].get("query_variants", [query])
@@ -557,6 +621,8 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     except Exception as exc:
         logger.exception("search failed")
         return _make_error(-32000, f"Search error: {exc}", request_id)
+    finally:
+        _record_latency("search", time.perf_counter() - started_at)
 
 
 def _handle_feedback(params: dict, request_id: Any) -> dict:
@@ -670,6 +736,7 @@ def _handle_read(params: dict, request_id: Any) -> dict:
     """Read agent startup context (identity + knowledge + learnings)."""
     global _request_count
     _request_count += 1
+    started_at = time.perf_counter()
 
     agent_id = params.get("agent_id", "hermes")
     limit = min(int(params.get("limit", 5)), 20)
@@ -751,6 +818,8 @@ def _handle_read(params: dict, request_id: Any) -> dict:
     except Exception as exc:
         logger.exception("read failed")
         return _make_error(-32000, f"Read error: {exc}", request_id)
+    finally:
+        _record_latency("read", time.perf_counter() - started_at)
 
 
 def _handle_learn(params: dict, request_id: Any) -> dict:
@@ -775,6 +844,7 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
     """
     global _request_count, _dual_write_enabled
     _request_count += 1
+    started_at = time.perf_counter()
 
     content = params.get("content", "")
     if not content:
@@ -829,8 +899,10 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
         emb_bytes = None
         if wb.model:
             try:
+                embedding_started_at = time.perf_counter()
                 emb = wb.model.encode(content).astype(_np.float32)
                 emb_bytes = emb.tobytes()
+                _record_latency("embedding", time.perf_counter() - embedding_started_at)
             except Exception as exc:
                 logger.warning("learn: embedding failed (%s) — storing without embedding", exc)
 
@@ -866,6 +938,15 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
                     (lid, supersedes),
                 )
 
+        wb.add_derived_from_edges(
+            learning_id=lid,
+            agent_id=agent_id,
+            category=category,
+            content=content,
+            evidence_doc_ids=evidence_doc_ids,
+            created_at=now,
+        )
+
         logger.info(
             "Stored learning #%d [%s/%s]: %.60s…",
             lid, agent_id, category, content,
@@ -889,6 +970,8 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
     except Exception as exc:
         logger.exception("learn failed")
         return _make_error(-32000, f"Learn error: {exc}", request_id)
+    finally:
+        _record_latency("learn", time.perf_counter() - started_at)
 
 
 def _extract_assertion(content: str) -> str:
@@ -1082,6 +1165,7 @@ def _handle_status(params: dict, request_id: Any) -> dict:
             "requests_served": _request_count,
             "socket_path": str(_unix_socket_path),
             "dual_write": _dual_write_enabled,
+            "latencies": _latency_snapshot(),
         },
         "engine": {
             "db_ok": db_ok,
@@ -1091,6 +1175,137 @@ def _handle_status(params: dict, request_id: Any) -> dict:
             "stats": db_stats,
         },
     }, request_id)
+
+
+def _faiss_cache_age_seconds(config=DEFAULT_CONFIG) -> Optional[float]:
+    path = Path(config.faiss_index_path)
+    if not path.exists():
+        return None
+    return round(max(0.0, time.time() - path.stat().st_mtime), 3)
+
+
+def _handle_health_report(params: dict, request_id: Any) -> dict:
+    """Return deeper read-only memory health diagnostics."""
+    now = time.time()
+    stale_cutoff = now - (30 * 24 * 60 * 60)
+    report = {
+        "stale_docs": [],
+        "never_recalled": [],
+        "contradicting_learnings": [],
+        "vector_backend_lag": [],
+        "faiss_cache_age_seconds": _faiss_cache_age_seconds(DEFAULT_CONFIG),
+    }
+
+    try:
+        db = SovereignDB(DEFAULT_CONFIG)
+        with db.cursor() as c:
+            c.execute(
+                """
+                SELECT doc_id, path, indexed_at, last_modified
+                FROM documents
+                WHERE COALESCE(indexed_at, last_modified, 0) < ?
+                ORDER BY COALESCE(indexed_at, last_modified, 0) ASC
+                LIMIT 25
+                """,
+                (stale_cutoff,),
+            )
+            for row in c.fetchall():
+                ts = row["indexed_at"] or row["last_modified"] or 0
+                report["stale_docs"].append({
+                    "doc_id": row["doc_id"],
+                    "path": row["path"],
+                    "age_days": round((now - ts) / 86400, 1) if ts else None,
+                })
+
+            c.execute(
+                """
+                SELECT doc_id, path
+                FROM documents
+                WHERE COALESCE(access_count, 0) = 0
+                ORDER BY indexed_at DESC NULLS LAST
+                LIMIT 25
+                """
+            )
+            report["never_recalled"] = [
+                {"doc_id": row["doc_id"], "path": row["path"]}
+                for row in c.fetchall()
+            ]
+
+            c.execute(
+                """
+                SELECT learning_id, agent_id, content, contradicts_id, status
+                FROM learnings
+                WHERE contradicts_id IS NOT NULL OR status = 'contradiction'
+                ORDER BY created_at DESC
+                LIMIT 25
+                """
+            )
+            report["contradicting_learnings"] = [
+                {
+                    "learning_id": row["learning_id"],
+                    "agent_id": row["agent_id"],
+                    "content": (row["content"] or "")[:160],
+                    "contradicts_id": row["contradicts_id"],
+                    "status": row["status"],
+                }
+                for row in c.fetchall()
+            ]
+
+            try:
+                c.execute("SELECT COALESCE(MAX(rowid), 0) AS max_rowid, COUNT(*) AS n FROM chunk_embeddings")
+                chunk_state = c.fetchone()
+                max_rowid = int(chunk_state["max_rowid"] or 0)
+                c.execute(
+                    """
+                    SELECT name, status, last_synced_chunk_rowid, last_synced_at, vector_count
+                    FROM vector_backends
+                    ORDER BY name
+                    """
+                )
+                for row in c.fetchall():
+                    lag = max(0, max_rowid - int(row["last_synced_chunk_rowid"] or 0))
+                    if lag or row["status"] not in ("ok", "empty"):
+                        report["vector_backend_lag"].append({
+                            "name": row["name"],
+                            "status": row["status"],
+                            "lag_chunks": lag,
+                            "last_synced_at": row["last_synced_at"],
+                            "vector_count": row["vector_count"],
+                        })
+            except Exception as exc:
+                report["vector_backend_lag"].append({"status": "unknown", "error": str(exc)})
+        db.close()
+    except Exception as exc:
+        logger.warning("health_report degraded: %s", exc)
+        report["error"] = str(exc)
+
+    return _make_response(report, request_id)
+
+
+def _handle_hygiene_report(params: dict, request_id: Any) -> dict:
+    """Run read-only vault/wiki hygiene checks and return JSON summary."""
+    vault_path = params.get("vault") or params.get("vault_path") or DEFAULT_CONFIG.vault_path
+    try:
+        from hygiene import run_hygiene_report
+        summary = run_hygiene_report(Path(vault_path))
+        return _make_response(summary, request_id)
+    except Exception as exc:
+        logger.warning("hygiene_report degraded: %s", exc)
+        return _make_response({
+            "status": "degraded",
+            "vault": str(vault_path),
+            "counts": {"block": 1, "warn": 0, "info": 0},
+            "findings": {
+                "block": [{
+                    "check": "hygiene_report",
+                    "path": str(vault_path),
+                    "message": str(exc),
+                }],
+                "warn": [],
+                "info": [],
+            },
+            "report_path": None,
+        }, request_id)
 
 
 # Method registry
@@ -1107,6 +1322,8 @@ _METHODS: Dict[str, callable] = {
     "daemon.handoff":         _handle_daemon_handoff,
     "handoff":                _handle_daemon_handoff,
     "status":                 _handle_status,
+    "health_report":          _handle_health_report,
+    "hygiene_report":         _handle_hygiene_report,
 }
 
 # ── Unix socket server ───────────────────────────────────────────────────
