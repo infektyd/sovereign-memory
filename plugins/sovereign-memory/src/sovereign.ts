@@ -1,6 +1,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { existsSync } from "node:fs";
+import net from "node:net";
 import { URL } from "node:url";
 import { AFM_HEALTH_URL, DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID, SOCKET_PATH } from "./config.js";
 import { auditTail, ensureVault, recordAudit, vaultExists } from "./vault.js";
@@ -145,6 +146,68 @@ export async function learnMemory(input: {
     agent_id: input.agentId ?? DEFAULT_AGENT_ID,
     workspace_id: input.workspaceId ?? DEFAULT_WORKSPACE_ID,
   });
+}
+
+function jsonRpcSocketRequest(socketPath: string, method: string, params: Record<string, unknown>): Promise<JsonResult> {
+  return new Promise((resolve) => {
+    if (!existsSync(socketPath)) {
+      resolve({ ok: false, error: `Socket not found: ${socketPath}` });
+      return;
+    }
+    const client = net.createConnection(socketPath);
+    let data = "";
+    let settled = false;
+    const finish = (result: JsonResult) => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      resolve(result);
+    };
+    client.setTimeout(2500, () => finish({ ok: false, error: "JSON-RPC request timed out" }));
+    client.on("connect", () => {
+      client.write(`${JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params })}\n`);
+    });
+    client.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+      if (!data.includes("\n")) return;
+      const line = data.split("\n")[0];
+      const parsed = parseSovrdJson<{ result?: unknown; error?: { message?: string } }>(line);
+      if (!parsed.ok) {
+        finish(parsed);
+        return;
+      }
+      if (parsed.data?.error) {
+        finish({ ok: false, data: parsed.data, error: parsed.data.error.message ?? "JSON-RPC error" });
+        return;
+      }
+      finish({ ok: true, data: parsed.data?.result });
+    });
+    client.on("error", (error) => finish({ ok: false, error: error.message }));
+    client.on("end", () => {
+      if (!settled && data.trim()) {
+        const parsed = parseSovrdJson<{ result?: unknown }>(data.trim());
+        finish(parsed.ok ? { ok: true, data: parsed.data?.result } : parsed);
+      }
+    });
+  });
+}
+
+export async function handoffMemory(input: {
+  fromAgent: string;
+  toAgent: string;
+  packet: Record<string, unknown>;
+}): Promise<JsonResult> {
+  const socketCandidates = [...new Set([SOCKET_PATH, "/tmp/sovrd.sock"])];
+  let last: JsonResult = { ok: false, error: "No socket attempted" };
+  for (const socketPath of socketCandidates) {
+    last = await jsonRpcSocketRequest(socketPath, "daemon.handoff", {
+      from_agent: input.fromAgent,
+      to_agent: input.toAgent,
+      packet: input.packet,
+    });
+    if (last.ok) return last;
+  }
+  return last;
 }
 
 function firstLine(text: string): string {

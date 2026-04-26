@@ -25,6 +25,7 @@ import {
   ensureVault,
   readPendingInbox,
   recordAudit,
+  resolveInboxHandoffContext,
   searchVaultNotes,
   writeInbox,
 } from "./vault.js";
@@ -98,6 +99,7 @@ async function handleSessionStart(payload: Record<string, unknown>): Promise<Hoo
     workspaceId: CLAUDECODE_WORKSPACE_ID,
   });
   const pending = await readPendingInbox(CLAUDECODE_VAULT_PATH, 3);
+  const handoffContext = await resolveInboxHandoffContext(CLAUDECODE_VAULT_PATH, pending);
 
   const envelope = wrapEnvelope({
     event: "SessionStart",
@@ -118,6 +120,13 @@ async function handleSessionStart(payload: Record<string, unknown>): Promise<Hoo
         created: entry.createdAt,
         path: entry.filePath,
         candidates: entry.payload.candidates,
+        kind: entry.payload.kind,
+        task: entry.payload.task,
+      })),
+      handoff_context: handoffContext.map((snippet) => ({
+        ref: snippet.ref,
+        path: snippet.relativePath,
+        snippet: snippet.snippet,
       })),
       recall:
         recall.ok && recall.data
@@ -139,6 +148,7 @@ async function handleSessionStart(payload: Record<string, unknown>): Promise<Hoo
       daemon_ok: status.socket.ok,
       afm_ok: status.afm.ok,
       pending_inbox: pending.length,
+      handoff_context: handoffContext.length,
     },
   });
 

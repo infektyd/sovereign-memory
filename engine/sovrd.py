@@ -60,12 +60,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import sys
 import time
 import threading
 import importlib.util
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -180,6 +182,265 @@ def _make_error(code: int, message: str, request_id: Any = None) -> dict:
     """Build a JSON-RPC error response."""
     return {"jsonrpc": "2.0", "id": request_id,
             "error": {"code": code, "message": message}}
+
+
+_HANDOFF_KINDS = frozenset({"handoff", "candidate_learning", "request", "answer"})
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)\b(api[_-]?key|password|secret|credential|private[_ -]?key)\b\s*[:=]\s*([^\s,;<>\"']+)"),
+    re.compile(r"(?i)\b(bearer|access[_-]?token|refresh[_-]?token|token)\b\s*[:=]\s*([^\s,;<>\"']+)"),
+    re.compile(r"(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+]
+_LOCAL_PATH_PATTERN = re.compile(r"(?<!\w)(?:/Users/[^ \n\r\t\"'<>]+|/Volumes/[^ \n\r\t\"'<>]+|/private/[^ \n\r\t\"'<>]+)")
+
+
+def _redact_text(text: str) -> tuple[str, bool]:
+    redacted = text
+    changed = False
+    for pattern in _SECRET_PATTERNS:
+        if pattern.search(redacted):
+            if pattern.groups >= 2:
+                redacted = pattern.sub(lambda m: f"{m.group(1)}=[REDACTED]", redacted)
+            else:
+                redacted = pattern.sub("[REDACTED]", redacted)
+            changed = True
+    if _LOCAL_PATH_PATTERN.search(redacted):
+        redacted = _LOCAL_PATH_PATTERN.sub("[REDACTED_PATH]", redacted)
+        changed = True
+    return redacted, changed
+
+
+def _redact_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, list):
+        items = []
+        changed = False
+        for item in value:
+            redacted, item_changed = _redact_value(item)
+            items.append(redacted)
+            changed = changed or item_changed
+        return items, changed
+    if isinstance(value, dict):
+        obj = {}
+        changed = False
+        for key, item in value.items():
+            redacted, item_changed = _redact_value(item)
+            obj[key] = redacted
+            changed = changed or item_changed
+        return obj, changed
+    return value, False
+
+
+def _agent_env_key(agent_id: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", agent_id.upper()).strip("_")
+
+
+def _default_agent_vault(agent_id: str) -> Path:
+    aliases = {
+        "claude-code": "claudecode",
+        "claudecode": "claudecode",
+        "codex": "codex",
+        "hermes": "hermes",
+        "openclaw": "openclaw",
+    }
+    slug = aliases.get(agent_id, re.sub(r"[^a-z0-9]+", "", agent_id.lower()) or "agent")
+    return Path.home() / ".sovereign-memory" / f"{slug}-vault"
+
+
+def _agent_vault(agent_id: str) -> tuple[Path, bool]:
+    mapping_raw = os.environ.get("SOVEREIGN_AGENT_VAULTS", "")
+    if mapping_raw:
+        try:
+            mapping = json.loads(mapping_raw)
+            if isinstance(mapping, dict) and agent_id in mapping:
+                return Path(os.path.expanduser(str(mapping[agent_id]))), True
+        except json.JSONDecodeError:
+            logger.warning("Invalid SOVEREIGN_AGENT_VAULTS JSON; using defaults")
+
+    env_key = f"SOVEREIGN_{_agent_env_key(agent_id)}_VAULT_PATH"
+    if os.environ.get(env_key):
+        return Path(os.path.expanduser(os.environ[env_key])), True
+    return _default_agent_vault(agent_id), False
+
+
+def _ensure_handoff_vault(vault_path: Path) -> None:
+    for rel in (
+        "raw",
+        "wiki",
+        "wiki/handoffs",
+        "schema",
+        "logs",
+        "inbox",
+        "outbox",
+    ):
+        (vault_path / rel).mkdir(parents=True, exist_ok=True)
+    log_path = vault_path / "log.md"
+    if not log_path.exists():
+        log_path.write_text("# Sovereign Memory Log\n\n", encoding="utf-8")
+    index_path = vault_path / "index.md"
+    if not index_path.exists():
+        index_path.write_text("# Sovereign Memory Index\n\n", encoding="utf-8")
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:80] or "handoff"
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _append_handoff_audit(vault_path: Path, tool: str, summary: str, details: dict) -> None:
+    _ensure_handoff_vault(vault_path)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    line = f"## [{ts}] {tool} | {summary}\n\n```json\n{json.dumps(details, indent=2, sort_keys=True)}\n```\n\n"
+    for path in (vault_path / "log.md", vault_path / "logs" / f"{ts[:10]}.md"):
+        if not path.exists():
+            path.write_text(f"# {ts[:10]} Sovereign Memory Audit\n\n", encoding="utf-8")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+
+
+def _validate_handoff_packet(from_agent: str, to_agent: str, packet: Any) -> tuple[Optional[dict], Optional[str]]:
+    if not isinstance(packet, dict):
+        return None, "packet must be an object"
+    normalized = dict(packet)
+    normalized.setdefault("from_agent", from_agent)
+    normalized.setdefault("to_agent", to_agent)
+    normalized.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    normalized.setdefault("trace_id", str(uuid.uuid4()))
+
+    required = {
+        "from_agent": str,
+        "to_agent": str,
+        "kind": str,
+        "task": str,
+        "envelope": str,
+        "wikilink_refs": list,
+        "trace_id": str,
+        "created_at": str,
+    }
+    for key, typ in required.items():
+        if key not in normalized:
+            return None, f"{key} is required"
+        if not isinstance(normalized[key], typ):
+            return None, f"{key} must be {typ.__name__}"
+        if typ is str and not normalized[key].strip():
+            return None, f"{key} must not be empty"
+    if normalized["from_agent"] != from_agent:
+        return None, "from_agent must match params.from_agent"
+    if normalized["to_agent"] != to_agent:
+        return None, "to_agent must match params.to_agent"
+    if normalized["kind"] not in _HANDOFF_KINDS:
+        return None, f"kind must be one of {sorted(_HANDOFF_KINDS)}"
+    if not all(isinstance(ref, str) and ref.strip() for ref in normalized["wikilink_refs"]):
+        return None, "wikilink_refs must be a list of strings"
+    if "expires_at" in normalized and normalized["expires_at"] is not None and not isinstance(normalized["expires_at"], str):
+        return None, "expires_at must be a string"
+    return normalized, None
+
+
+def _compile_handoff_page(sender_vault: Path, packet: dict, stamp: str) -> Optional[Path]:
+    if packet.get("kind") != "handoff":
+        return None
+    title = packet["task"].strip()
+    slug = _slugify(f"{packet['from_agent']}-to-{packet['to_agent']}-{title}")
+    page_path = sender_vault / "wiki" / "handoffs" / f"{stamp[:8]}-{slug}.md"
+    refs = "\n".join(f"- [[{ref.removesuffix('.md')}]]" for ref in packet.get("wikilink_refs", []))
+    page = (
+        "---\n"
+        f"title: {title}\n"
+        "type: handoff\n"
+        "status: accepted\n"
+        "privacy: safe\n"
+        f"from_agent: {packet['from_agent']}\n"
+        f"to_agent: {packet['to_agent']}\n"
+        f"trace_id: {packet['trace_id']}\n"
+        f"created: {packet['created_at']}\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        f"From: `{packet['from_agent']}`\n\n"
+        f"To: `{packet['to_agent']}`\n\n"
+        "## Envelope\n\n"
+        f"```xml\n{packet['envelope']}\n```\n\n"
+        "## Wikilink References\n\n"
+        f"{refs or '- None'}\n"
+    )
+    page_path.write_text(page, encoding="utf-8")
+    return page_path
+
+
+def _handle_daemon_handoff(params: dict, request_id: Any) -> dict:
+    """Validate, redact, and mediate an agent-to-agent inbox handoff."""
+    global _request_count
+    _request_count += 1
+
+    from_agent = str(params.get("from_agent", "")).strip()
+    to_agent = str(params.get("to_agent", "")).strip()
+    if not from_agent or not to_agent:
+        return _make_error(-32602, "from_agent and to_agent are required", request_id)
+
+    packet, error = _validate_handoff_packet(from_agent, to_agent, params.get("packet"))
+    if error:
+        return _make_error(-32602, error, request_id)
+
+    redacted_packet, redacted = _redact_value(packet)
+    sender_vault, sender_explicit = _agent_vault(from_agent)
+    recipient_vault, recipient_explicit = _agent_vault(to_agent)
+    create_missing = os.environ.get("SOVEREIGN_HANDOFF_CREATE_MISSING_VAULTS", "1").lower() not in {"0", "false", "off"}
+
+    if not recipient_explicit and not recipient_vault.exists() and not create_missing:
+        if create_missing or sender_explicit:
+            _ensure_handoff_vault(sender_vault)
+        return _make_response({
+            "status": "degraded",
+            "delivered": False,
+            "reason": f"destination vault not found for {to_agent}",
+            "to_agent": to_agent,
+            "recipient_vault": str(recipient_vault),
+        }, request_id)
+
+    try:
+        _ensure_handoff_vault(sender_vault)
+        _ensure_handoff_vault(recipient_vault)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        suffix = f"{stamp}-{_slugify(redacted_packet['task'])}-{redacted_packet['trace_id'][:8]}.json"
+        outbox_path = sender_vault / "outbox" / suffix
+        inbox_path = recipient_vault / "inbox" / suffix
+        _write_json(outbox_path, redacted_packet)
+        _write_json(inbox_path, redacted_packet)
+        page_path = _compile_handoff_page(sender_vault, redacted_packet, stamp)
+        audit_details = {
+            "trace_id": redacted_packet["trace_id"],
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "kind": redacted_packet["kind"],
+            "task": redacted_packet["task"],
+            "inbox_path": str(inbox_path),
+            "outbox_path": str(outbox_path),
+            "handoff_page": str(page_path) if page_path else None,
+            "redacted": redacted,
+        }
+        _append_handoff_audit(sender_vault, "handoff_sent", redacted_packet["task"], audit_details)
+        _append_handoff_audit(recipient_vault, "handoff_received", redacted_packet["task"], audit_details)
+        return _make_response({
+            "status": "ok",
+            "delivered": True,
+            "redacted": redacted,
+            "inbox_path": str(inbox_path),
+            "outbox_path": str(outbox_path),
+            "handoff_page": str(page_path) if page_path else None,
+            "trace_id": redacted_packet["trace_id"],
+        }, request_id)
+    except Exception as exc:
+        logger.exception("daemon.handoff failed")
+        return _make_response({
+            "status": "degraded",
+            "delivered": False,
+            "reason": str(exc),
+            "to_agent": to_agent,
+        }, request_id)
 
 
 def _handle_ping(params: dict, request_id: Any) -> dict:
@@ -843,6 +1104,8 @@ _METHODS: Dict[str, callable] = {
     "learn":                  _handle_learn,
     "resolve_contradiction":  _handle_resolve_contradiction,
     "log_event":              _handle_log_event,
+    "daemon.handoff":         _handle_daemon_handoff,
+    "handoff":                _handle_daemon_handoff,
     "status":                 _handle_status,
 }
 

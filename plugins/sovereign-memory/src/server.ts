@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
+import { CLAUDECODE_AGENT_ID, DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
-import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
+import { formatRecall, handoffMemory, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
 import { buildHandoffPacket, extractScarTissue, prepareOutcome, prepareTask } from "./task.js";
 import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
 import { wrapEnvelope } from "./agent_envelope.js";
@@ -341,6 +341,7 @@ server.registerTool(
     inputSchema: {
       task: z.string().min(1),
       agentId: z.string().optional(),
+      toAgent: z.string().optional(),
       workspaceId: z.string().optional(),
       vaultPath: z.string().optional(),
       openQuestions: z.array(z.string()).optional(),
@@ -348,13 +349,15 @@ server.registerTool(
       limit: z.number().int().min(1).max(12).optional(),
     },
   },
-  async ({ task, agentId, workspaceId, vaultPath, openQuestions, inboxPointer, limit }) => {
+  async ({ task, agentId, toAgent, workspaceId, vaultPath, openQuestions, inboxPointer, limit }) => {
     const effectiveVaultPath = vaultPath ?? DEFAULT_VAULT_PATH;
+    const fromAgent = agentId ?? DEFAULT_AGENT_ID;
+    const targetAgent = toAgent ?? CLAUDECODE_AGENT_ID;
     const tail = await auditTail(effectiveVaultPath, 60);
     const scarTissue = extractScarTissue(tail.entries);
     const packet = await buildHandoffPacket({
       task,
-      agentId,
+      agentId: fromAgent,
       workspaceId,
       vaultPath: effectiveVaultPath,
       openQuestions,
@@ -381,17 +384,35 @@ server.registerTool(
         task: packet.task,
       },
     });
+    const handoffPacket = {
+      from_agent: packet.agentOrigin,
+      to_agent: targetAgent,
+      kind: "handoff",
+      task: packet.task,
+      envelope,
+      wikilink_refs: packet.topRecalls.map((source) => source.relativePath.replace(/\.md$/, "")),
+      trace_id: `plugin-${Date.now().toString(36)}`,
+      created_at: new Date().toISOString(),
+    };
+    const delivery = await handoffMemory({
+      fromAgent: packet.agentOrigin,
+      toAgent: targetAgent,
+      packet: handoffPacket,
+    });
     await recordAudit(effectiveVaultPath, {
       tool: "sovereign_negotiate_handoff",
       summary: task.slice(0, 120),
       details: {
         agent: packet.agentOrigin,
+        to_agent: targetAgent,
         workspace: packet.workspace,
         recalls: packet.topRecalls.length,
         scar_tissue: packet.scarTissue.length,
+        delivered: delivery.ok,
+        delivery_error: delivery.ok ? undefined : delivery.error,
       },
     });
-    return textResult(envelope);
+    return textResult(JSON.stringify({ envelope, handoff_packet: handoffPacket, delivery }, null, 2));
   },
 );
 

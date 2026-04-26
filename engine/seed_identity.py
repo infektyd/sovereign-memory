@@ -163,6 +163,8 @@ def _ensure_wiki_dirs():
         os.path.join(vault_path, "wiki", "procedures"),
         os.path.join(vault_path, "wiki", "artifacts"),
         os.path.join(vault_path, "wiki", "handoffs"),
+        os.path.join(vault_path, "inbox"),
+        os.path.join(vault_path, "outbox"),
     ]
     for d in new_dirs:
         try:
