@@ -63,7 +63,7 @@
 | PR-15 | W6 | MERGED | `.claude/worktrees/pr-15-quant-semantic` | `pr-15-quant-semantic` | `f3085c1` | Merged into orchestration as `caee7fe`; additive conflicts resolved in `WORKTREE_STATE.md` and `eval/harness.py`. Worker concern: live FAISS unavailable, mock eval used. |
 | PR-10 | W7 | MERGED | `.claude/worktrees/pr-10-inbox-handoff` | `pr-10-inbox-handoff` | `09c7015` | Merged into orchestration as `6a47f57`. |
 | PR-11 | W7 | MERGED | `.claude/worktrees/pr-11-observability` | `pr-11-observability` | `fab7a72` | Merged into orchestration as `2cd85de`; additive conflicts resolved in `WORKTREE_STATE.md` and `sovrd.py`. |
-| PR-12 | W8 | QUEUED | — | — | — | |
+| PR-12 | W8 | IN_FLIGHT | `.claude/worktrees/pr-12-afm-session-distill` | `pr-12-afm-session-distill` | `57defa5` | Dispatched from W7-verified orchestration HEAD. |
 | PR-13 | W9 | QUEUED | — | — | — | |
 | PR-14 | W10 | QUEUED | — | — | — | |
 
@@ -205,3 +205,4 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T19:08Z | W7 dispatch checkpoint: PR-10 and PR-11 worktrees created off W6-verified orchestration HEAD `262cccd`; tracker marked both `[A]`; implementers queued for parallel work. |
 | 2026-04-26T19:21Z | W7 merge: PR-10 merged cleanly as `6a47f57`; PR-11 merged as `2cd85de` after additive `sovrd.py`/`WORKTREE_STATE.md` conflict resolution. Focused tests `pytest -q engine/test_pr10_handoff.py engine/test_pr11_observability.py engine/test_pr9_feedback_trace.py` passed: 16 passed. Plugin `npm test` passed: 31/31. |
 | 2026-04-26T19:27Z | W7 verification passed on orchestration: `cd engine && pytest -q` 200 passed / 3 skipped; `cd plugins/sovereign-memory && npm test` 31/31 passed; `npm run smoke:hook` returned valid envelope with handoff context surface; migration safety on `/tmp/migration_check_w7.db` preserved 292 documents and 711 chunks, `PRAGMA user_version = 6`. |
+| 2026-04-26T19:31Z | W8 dispatch checkpoint: PR-12 worktree created off W7-verified orchestration HEAD `57defa5`; tracker marked `[A]`; implementer queued. |
