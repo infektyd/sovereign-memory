@@ -93,6 +93,13 @@ class SovereignConfig:
     decay_min_score: float = 0.05
     decay_cron_hour: int = 4
 
+    # PR-3: Vector backend selection.
+    # Supported values: "faiss-disk" (default), "faiss-mem".
+    # Stubs (non-functional without extras): "qdrant", "lance".
+    # Multiple values enable fan-out via multi.py; results merged with RRF.
+    # Single value ["faiss-disk"] produces bit-identical results to pre-PR-3.
+    vector_backends: list = field(default_factory=lambda: ["faiss-disk"])
+
     # Thread propagation
     thread_bind_threshold: float = 0.55
 

@@ -106,6 +106,8 @@ def run_migrations(conn: sqlite3.Connection) -> None:
                    cleanly.
     """
     _ensure_tracking_table(conn)
+    if conn.in_transaction:
+        conn.commit()
 
     applied_versions = {
         v for (v,) in conn.execute("SELECT version FROM schema_migrations")

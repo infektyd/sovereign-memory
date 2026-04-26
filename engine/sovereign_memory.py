@@ -33,6 +33,10 @@ Usage:
 
     # Show stats
     python sovereign_memory.py stats
+
+    # Sync / inspect vector backends
+    python sovereign_memory.py vectors --sync
+    python sovereign_memory.py vectors --status
 """
 
 import sys
@@ -312,6 +316,45 @@ def cmd_faiss(args):
         sys.exit(1)
 
 
+def _build_vector_backends(config, db):
+    """Resolve configured vector backend names into backend instances."""
+    from backends.faiss_disk import FaissDiskBackend
+    from backends.faiss_mem import FaissMemBackend
+
+    backends = []
+    for name in getattr(config, "vector_backends", ["faiss-disk"]):
+        if name == "faiss-disk":
+            backends.append(FaissDiskBackend(config, db))
+        elif name == "faiss-mem":
+            backends.append(FaissMemBackend(config))
+        else:
+            raise ValueError(f"Unsupported vector backend for CLI sync: {name}")
+    return backends
+
+
+def cmd_vectors(args):
+    """Sync or inspect PR-3 vector backend state."""
+    from vector_sync import get_backend_state, sync_all
+
+    db = SovereignDB(DEFAULT_CONFIG)
+    try:
+        backends = _build_vector_backends(DEFAULT_CONFIG, db)
+        if "--sync" in args:
+            results = sync_all(backends, db, DEFAULT_CONFIG, full_rebuild="--full" in args)
+            print(json.dumps({"status": "ok", "backends": results}, indent=2))
+        elif "--status" in args or not args:
+            states = {
+                backend.name: get_backend_state(backend.name, db)
+                for backend in backends
+            }
+            print(json.dumps({"status": "ok", "backends": states}, indent=2))
+        else:
+            print("Usage: sovereign_memory.py vectors [--sync [--full] | --status]")
+            sys.exit(1)
+    finally:
+        db.close()
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -336,6 +379,7 @@ def main():
         "watch": cmd_watch,
         "stats": cmd_stats,
         "faiss": cmd_faiss,
+        "vectors": cmd_vectors,
     }
 
     if command in commands:
