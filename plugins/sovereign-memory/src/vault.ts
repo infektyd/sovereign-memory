@@ -1,4 +1,4 @@
-import { access, appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type VaultSection =
@@ -77,6 +77,7 @@ const VAULT_DIRS = [
   "wiki/sessions",
   "schema",
   "logs",
+  "inbox",
   ".obsidian",
 ];
 
@@ -431,6 +432,69 @@ export async function searchVaultNotes(vaultPath: string, query: string, limit =
     .filter((result) => result.score > 0)
     .sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath))
     .slice(0, limit);
+}
+
+export interface InboxEntry {
+  slug: string;
+  filePath: string;
+  createdAt: string;
+  payload: Record<string, unknown>;
+}
+
+export async function writeInbox(
+  vaultPath: string,
+  slug: string,
+  payload: Record<string, unknown>,
+): Promise<InboxEntry> {
+  await ensureVault(vaultPath);
+  const safeSlug = slugify(slug || "session");
+  const stamp = `${isoDate()}-${Date.now().toString(36)}`;
+  const fileName = `${stamp}-${safeSlug}.json`;
+  const filePath = path.join(vaultPath, "inbox", fileName);
+  const createdAt = new Date().toISOString();
+  const body = { slug: safeSlug, createdAt, ...payload };
+  await writeFile(filePath, JSON.stringify(body, null, 2), "utf8");
+  return { slug: safeSlug, filePath, createdAt, payload: body };
+}
+
+export async function readPendingInbox(
+  vaultPath: string,
+  limit = 5,
+): Promise<InboxEntry[]> {
+  const dir = path.join(vaultPath, "inbox");
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  names.sort();
+  const recent = names.slice(-limit);
+  const entries: InboxEntry[] = [];
+  for (const name of recent) {
+    const filePath = path.join(dir, name);
+    try {
+      const raw = await readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      entries.push({
+        slug: typeof parsed.slug === "string" ? parsed.slug : name,
+        filePath,
+        createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
+        payload: parsed,
+      });
+    } catch {
+      // ignore unreadable inbox files
+    }
+  }
+  return entries;
+}
+
+export async function clearInboxEntry(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch {
+    // best effort; nothing to do if already gone
+  }
 }
 
 export async function vaultExists(vaultPath: string): Promise<boolean> {

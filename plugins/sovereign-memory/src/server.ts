@@ -4,8 +4,9 @@ import { z } from "zod";
 import { DEFAULT_AGENT_ID, DEFAULT_VAULT_PATH, DEFAULT_WORKSPACE_ID } from "./config.js";
 import { assessLearningQuality, routeMemoryIntent } from "./policy.js";
 import { formatRecall, learnMemory, recallMemory, statusAndAudit } from "./sovereign.js";
-import { prepareOutcome, prepareTask } from "./task.js";
+import { buildHandoffPacket, extractScarTissue, prepareOutcome, prepareTask } from "./task.js";
 import { auditReport, auditTail, recordAudit, searchVaultNotes, vaultFirstLearn, writeVaultPage } from "./vault.js";
+import { wrapEnvelope } from "./agent_envelope.js";
 
 function textResult(text: string) {
   return {
@@ -328,6 +329,69 @@ server.registerTool(
   async ({ limit, vaultPath }) => {
     const tail = await auditTail(vaultPath ?? DEFAULT_VAULT_PATH, limit ?? 20);
     return textResult(tail.text || "No audit entries yet.");
+  },
+);
+
+server.registerTool(
+  "sovereign_negotiate_handoff",
+  {
+    title: "Sovereign Negotiate Handoff",
+    description:
+      "Build an agent-to-agent handoff envelope (identity, top recalls with provenance, scar tissue, open questions, inbox pointer) optimized for another LLM to consume.",
+    inputSchema: {
+      task: z.string().min(1),
+      agentId: z.string().optional(),
+      workspaceId: z.string().optional(),
+      vaultPath: z.string().optional(),
+      openQuestions: z.array(z.string()).optional(),
+      inboxPointer: z.string().optional(),
+      limit: z.number().int().min(1).max(12).optional(),
+    },
+  },
+  async ({ task, agentId, workspaceId, vaultPath, openQuestions, inboxPointer, limit }) => {
+    const effectiveVaultPath = vaultPath ?? DEFAULT_VAULT_PATH;
+    const tail = await auditTail(effectiveVaultPath, 60);
+    const scarTissue = extractScarTissue(tail.entries);
+    const packet = await buildHandoffPacket({
+      task,
+      agentId,
+      workspaceId,
+      vaultPath: effectiveVaultPath,
+      openQuestions,
+      inboxPointer,
+      scarTissue,
+      limit,
+    });
+    const envelope = wrapEnvelope({
+      event: "Handoff",
+      agent: packet.agentOrigin,
+      body: {
+        identity: packet.identity,
+        recall: packet.topRecalls.map((source) => ({
+          wikilink: source.wikilink,
+          score: source.score,
+          authority: source.authority,
+          freshness: source.freshness,
+          snippet: source.snippet,
+        })),
+        scar_tissue: packet.scarTissue,
+        open_questions: packet.openQuestions,
+        daemon: { ok: packet.daemonOk, lead: packet.daemonLead },
+        inbox_pointer: packet.inboxPointer,
+        task: packet.task,
+      },
+    });
+    await recordAudit(effectiveVaultPath, {
+      tool: "sovereign_negotiate_handoff",
+      summary: task.slice(0, 120),
+      details: {
+        agent: packet.agentOrigin,
+        workspace: packet.workspace,
+        recalls: packet.topRecalls.length,
+        scar_tissue: packet.scarTissue.length,
+      },
+    });
+    return textResult(envelope);
   },
 );
 

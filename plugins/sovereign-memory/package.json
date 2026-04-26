@@ -10,7 +10,8 @@
     "console": "npm run build && node dist/ui-server.js",
     "design:lint": "npx @google/design.md lint ../../DESIGN.md",
     "test:live:prepare": "npm run build && node tests/live-prepare-task.mjs",
-    "smoke:status": "npm run build && node dist/cli.js status"
+    "smoke:status": "npm run build && node dist/cli.js status",
+    "smoke:hook": "npm run build && node dist/hook.js SessionStart < /dev/null"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

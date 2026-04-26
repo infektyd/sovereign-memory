@@ -26,3 +26,22 @@ export const DEFAULT_AGENT_ID = process.env.SOVEREIGN_CODEX_AGENT_ID ?? "codex";
 
 export const DEFAULT_WORKSPACE_ID =
   process.env.SOVEREIGN_CODEX_WORKSPACE_ID ?? "workspace-codex";
+
+export const CLAUDECODE_AGENT_ID =
+  process.env.SOVEREIGN_CLAUDECODE_AGENT_ID ?? "claude-code";
+
+export const CLAUDECODE_WORKSPACE_ID =
+  process.env.SOVEREIGN_CLAUDECODE_WORKSPACE_ID ??
+  `workspace-${path.basename(process.cwd())}`;
+
+export const CLAUDECODE_VAULT_PATH =
+  process.env.SOVEREIGN_CLAUDECODE_VAULT_PATH ??
+  path.join(os.homedir(), ".sovereign-memory", "claudecode-vault");
+
+export const CLAUDECODE_HOOKS_ENABLED =
+  (process.env.SOVEREIGN_CLAUDECODE_HOOKS ?? "on").toLowerCase() !== "off";
+
+export const CLAUDECODE_CONTEXT_WINDOW = (() => {
+  const raw = Number(process.env.CLAUDE_CONTEXT_WINDOW);
+  return Number.isFinite(raw) && raw > 0 ? raw : 200_000;
+})();
