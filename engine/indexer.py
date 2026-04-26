@@ -54,7 +54,7 @@ class VaultIndexer:
 
         PR-2: Also parses status, privacy, and page type.
         """
-        agent_m = re.search(r"agent:\s*(\w+)", content)
+        agent_m = re.search(r"agent:\s*([^\s]+)", content)
         sigil_m = re.search(r"sigil:\s*(.)", content)
         status_m = re.search(r"status:\s*(\S+)", content)
         privacy_m = re.search(r"privacy:\s*(\S+)", content)
@@ -63,6 +63,7 @@ class VaultIndexer:
         status = (status_m.group(1).strip('"\'') if status_m else "candidate").lower()
         privacy = (privacy_m.group(1).strip('"\'') if privacy_m else "safe").lower()
         page_type = type_m.group(1).strip('"\'') if type_m else None
+        agent = agent_m.group(1).strip('"\'') if agent_m else "unknown"
 
         # Clamp to valid values
         valid_statuses = {"draft", "candidate", "accepted", "superseded", "rejected", "expired"}
@@ -72,13 +73,33 @@ class VaultIndexer:
         if privacy not in valid_privacies:
             privacy = "safe"
 
+        layer = VaultIndexer._infer_layer(agent=agent, page_type=page_type)
+
         return {
-            "agent": agent_m.group(1) if agent_m else "unknown",
+            "agent": agent,
             "sigil": sigil_m.group(1) if sigil_m else "❓",
             "page_status": status,
             "privacy_level": privacy,
             "page_type": page_type,
+            "layer": layer,
         }
+
+    @staticmethod
+    def _infer_layer(agent: str, page_type: Optional[str], whole_document: int = 1) -> str:
+        """Map document metadata to the PR-5 recall layer taxonomy."""
+        if whole_document == 1 and agent.startswith("identity:"):
+            return "identity"
+        if page_type and page_type.lower() == "artifact":
+            return "artifact"
+        return "knowledge"
+
+    @staticmethod
+    def _invalidate_rerank_chunks(chunk_ids: List[int]) -> None:
+        try:
+            from rerank_cache import invalidate_chunks
+            invalidate_chunks(chunk_ids)
+        except Exception as exc:
+            logger.debug("Rerank cache invalidation skipped: %s", exc)
 
     # ── Core indexing ──────────────────────────────────────────
 
@@ -129,28 +150,37 @@ class VaultIndexer:
 
                     if row:
                         doc_id = row["doc_id"]
+                        layer = meta.get("layer", "knowledge")
                         c.execute(
                             """UPDATE documents
                                SET agent=?, sigil=?, last_modified=?, indexed_at=?,
-                                   page_status=?, privacy_level=?, page_type=?
+                                   page_status=?, privacy_level=?, page_type=?, layer=?
                                WHERE doc_id=?""",
                             (meta["agent"], meta["sigil"], mtime, now,
                              meta.get("page_status", "candidate"),
                              meta.get("privacy_level", "safe"),
                              meta.get("page_type"),
+                             layer,
                              doc_id),
                         )
+                        c.execute(
+                            "SELECT chunk_id FROM chunk_embeddings WHERE doc_id = ?",
+                            (doc_id,),
+                        )
+                        self._invalidate_rerank_chunks([r["chunk_id"] for r in c.fetchall()])
                         c.execute("DELETE FROM vault_fts WHERE doc_id = ?", (doc_id,))
                         c.execute("DELETE FROM chunk_embeddings WHERE doc_id = ?", (doc_id,))
                     else:
+                        layer = meta.get("layer", "knowledge")
                         c.execute(
                             """INSERT INTO documents (path, agent, sigil, last_modified, indexed_at,
-                                   page_status, privacy_level, page_type)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                   page_status, privacy_level, page_type, layer)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (path, meta["agent"], meta["sigil"], mtime, now,
                              meta.get("page_status", "candidate"),
                              meta.get("privacy_level", "safe"),
-                             meta.get("page_type")),
+                             meta.get("page_type"),
+                             layer),
                         )
                         doc_id = c.lastrowid
 
@@ -171,12 +201,12 @@ class VaultIndexer:
                             c.execute(
                                 """INSERT INTO chunk_embeddings
                                    (doc_id, chunk_index, chunk_text, embedding,
-                                    heading_context, model_name, computed_at)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                    heading_context, model_name, computed_at, layer)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                                 (
                                     doc_id, chunk.chunk_index, chunk.text,
                                     emb_bytes, chunk.heading_path,
-                                    self.config.embedding_model, now,
+                                    self.config.embedding_model, now, layer,
                                 ),
                             )
                             stats["chunks"] += 1
@@ -197,6 +227,11 @@ class VaultIndexer:
             c.execute("SELECT doc_id, path FROM documents")
             for row in c.fetchall():
                 if row["path"] not in disk_files:
+                    c.execute(
+                        "SELECT chunk_id FROM chunk_embeddings WHERE doc_id = ?",
+                        (row["doc_id"],),
+                    )
+                    self._invalidate_rerank_chunks([r["chunk_id"] for r in c.fetchall()])
                     c.execute("DELETE FROM documents WHERE doc_id = ?", (row["doc_id"],))
                     c.execute("DELETE FROM vault_fts WHERE doc_id = ?", (row["doc_id"],))
                     c.execute("DELETE FROM chunk_embeddings WHERE doc_id = ?", (row["doc_id"],))

@@ -120,11 +120,13 @@ class SovereignDB:
                 page_type TEXT,
                 superseded_by INTEGER,
                 expires_at REAL,
-                evidence_refs TEXT
+                evidence_refs TEXT,
+                layer TEXT DEFAULT NULL
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_doc_path ON documents(path)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_doc_agent ON documents(agent)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_doc_layer ON documents(layer)")
 
         # === Chunk Embeddings (one doc → many chunks) ===
         # V3.1: No more 'compressed' or 'norm' columns.
@@ -139,11 +141,13 @@ class SovereignDB:
                 heading_context TEXT,
                 model_name TEXT,
                 computed_at REAL,
+                layer TEXT DEFAULT NULL,
                 FOREIGN KEY(doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE,
                 UNIQUE(doc_id, chunk_index)
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk_embeddings(doc_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_chunk_layer ON chunk_embeddings(layer)")
 
         # === Memory Links ===
         c.execute("""
