@@ -63,6 +63,7 @@ htmlcov/
 .env.*
 !.env.example
 .claude/
+.kilo/
 .DS_Store
 ._*
 .idea/
