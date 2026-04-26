@@ -61,14 +61,14 @@ python -m engine.eval.harness run --config baseline,with-expand
 
 ## PR-7 Completion Checklist
 
-- [ ] `engine/query_expand.py` with rule-based + AFM strategies
-- [ ] `engine/data/synonyms.yml` with initial synonym/acronym set
-- [ ] `search()` accepts `expand` parameter (default `True` = rule-based)
-- [ ] Query variants included in response
-- [ ] `summarize_neighborhood` works when AFM available
-- [ ] AFM mode gracefully degrades when bridge down
-- [ ] Eval harness comparison run and documented
-- [ ] All existing tests pass
+- [x] `engine/query_expand.py` with rule-based + AFM strategies
+- [x] `engine/data/synonyms.yml` with initial synonym/acronym set
+- [x] `search()` accepts `expand` parameter (default `True` = rule-based)
+- [x] Query variants included in response
+- [x] `summarize_neighborhood` works when AFM available
+- [x] AFM mode gracefully degrades when bridge down
+- [x] Eval harness comparison run and documented (`python3 -m engine.eval.harness run --config baseline,with-expand --mock`; baseline R@5=0.9608, with-expand R@5=0.9608)
+- [x] All existing engine tests pass (`pytest -q engine`: 180 passed, 3 skipped; plugin `npm test` not run because this worktree has no `node_modules` and `tsc` is unavailable)
 
 ---
 

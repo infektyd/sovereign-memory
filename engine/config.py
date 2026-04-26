@@ -91,6 +91,10 @@ class SovereignConfig:
     # Feedback demotion (PR-9)
     feedback_enabled: bool = True
 
+    # Query expansion (PR-7)
+    # "rule" is default-on; "afm" is opt-in per request until eval-gated.
+    query_expand_default: str = "rule"
+
     # Memory decay (Phase 8)
     decay_half_life_days: float = 7.0
     decay_min_score: float = 0.05

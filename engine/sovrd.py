@@ -246,6 +246,8 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     sort = str(params.get("sort", "semantic"))
     start_date = params.get("start_date")
     end_date = params.get("end_date")
+    expand = params.get("expand", True)
+    summarize_neighborhood = bool(params.get("summarize_neighborhood", False))
 
     # depth="auto" means "pick snippet and apply MMR budget packing"
     if depth == "auto":
@@ -266,6 +268,8 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             sort=sort,
             start_date=start_date,
             end_date=end_date,
+            expand=expand,
+            summarize_neighborhood=summarize_neighborhood,
         )
 
         # Apply MMR token-budget packing if requested
@@ -283,6 +287,10 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             "depth": depth,
             "count": len(results),
             "trace_id": getattr(engine, "last_trace_id", None),
+            "query_variants": (
+                results[0].get("query_variants", [query])
+                if results else [query]
+            ),
             "results": results,
         }, request_id)
     except Exception as exc:
