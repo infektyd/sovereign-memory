@@ -50,8 +50,8 @@
 
 | PR | Wave | Status | Worktree | Branch | Last SHA | Notes |
 |----|------|--------|----------|--------|----------|-------|
-| PR-1 | W1 | IN_FLIGHT | `.claude/worktrees/pr-01-foundation` | `pr-01-foundation` | (pending) | Dispatched at orchestration init. |
-| PR-1b | W2 | QUEUED | — | — | — | |
+| PR-1 | W1 | MERGED | (removed) | `pr-01-foundation` | `7a09fc4` | Merged via `--no-ff` into orchestration. 13/13 pytest, 29/29 npm. |
+| PR-1b | W2 | IN_FLIGHT | `.claude/worktrees/pr-01b-contracts` | `pr-01b-contracts` | (pending) | W2 solo — touches docs/contracts/ + plugins/sovereign-memory/src + engine/retrieval.py + engine/sovrd.py + engine/tokens.py. |
 | PR-2 | W3 | QUEUED | — | — | — | |
 | PR-3 | W4 | QUEUED | — | — | — | |
 | PR-4 | W4 | QUEUED | — | — | — | |
@@ -186,3 +186,6 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T19:25Z | Orchestration branch created from `codex/reconcile-gemini-main` HEAD `6a5bbe0`. |
 | 2026-04-26T19:25Z | Baseline snapshot commit on `orchestration/v3.1-to-v4`: 16 PR docs + master tracker + spec. |
 | 2026-04-26T19:30Z | RESUME.md written. PR-1 marked IN_FLIGHT, worktree created, implementer dispatched. |
+| 2026-04-26T19:50Z | PR-1 implementer reported DONE: 7a09fc4 (foundation) + 2b9c5f4 (state). 13/13 pytest, 29/29 npm. |
+| 2026-04-26T19:51Z | PR-1 merged into orchestration via --no-ff. pytest re-verified green. |
+| 2026-04-26T19:52Z | PR-1 worktree removed. PR-1b worktree created off orchestration HEAD. PR-1b dispatched. |
