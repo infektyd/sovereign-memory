@@ -20,6 +20,10 @@ PR-1b adds progressive disclosure depth tiers to retrieve():
 import time
 import math
 import logging
+import hashlib
+import importlib.util
+import sys
+from pathlib import Path
 from typing import List, Dict, Literal, Optional, Sequence
 
 import numpy as np
@@ -47,6 +51,29 @@ _TYPE_TO_AUTHORITY = {
     "entity": "vault",
     "synthesis": "concept",
 }
+
+
+def _query_class(query: str) -> str:
+    """Stable coarse query class for feedback aggregation."""
+    safe = RetrievalEngine._sanitize_fts_query(query).lower() if query else ""
+    words = safe.split()[:8]
+    normalized = " ".join(words)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _trace_ring():
+    """Load engine/trace.py without colliding with Python's stdlib trace module."""
+    module_name = "_sovereign_trace"
+    if module_name in sys.modules:
+        return sys.modules[module_name].GLOBAL_TRACE_RING
+    trace_path = Path(__file__).with_name("trace.py")
+    spec = importlib.util.spec_from_file_location(module_name, trace_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load trace module from {trace_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.GLOBAL_TRACE_RING
 
 
 def _page_type_to_authority(page_type: Optional[str], agent: str) -> Optional[str]:
@@ -129,6 +156,9 @@ class RetrievalEngine:
         self._model = None
         self._reranker = None
         self._tokenizer = None
+        self._feedback_cache = {}
+        self._feedback_cache_loaded_at = 0.0
+        self.last_trace_id: Optional[str] = None
 
     @property
     def model(self):
@@ -418,6 +448,129 @@ class RetrievalEngine:
                 model_version = str(value)
                 break
         return model_name, model_version
+
+    # ── Feedback ──────────────────────────────────────────────
+
+    def record_feedback(
+        self,
+        query: str,
+        result_id: int,
+        useful: bool,
+        agent_id: str = "main",
+    ) -> Dict:
+        """Store useful/not-useful feedback for a result id."""
+        doc_id = None
+        chunk_id = None
+        with self.db.cursor() as c:
+            c.execute(
+                "SELECT chunk_id, doc_id FROM chunk_embeddings WHERE chunk_id = ?",
+                (result_id,),
+            )
+            row = c.fetchone()
+            if row is not None:
+                chunk_id = row["chunk_id"]
+                doc_id = row["doc_id"]
+            else:
+                c.execute("SELECT doc_id FROM documents WHERE doc_id = ?", (result_id,))
+                row = c.fetchone()
+                if row is not None:
+                    doc_id = row["doc_id"]
+
+            c.execute(
+                """INSERT INTO feedback
+                   (query_hash, query_text, doc_id, chunk_id, agent_id, useful, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    _query_class(query),
+                    query,
+                    doc_id,
+                    chunk_id,
+                    agent_id,
+                    1 if useful else 0,
+                    int(time.time()),
+                ),
+            )
+            feedback_id = c.lastrowid
+
+        self._feedback_cache_loaded_at = 0.0
+        return {
+            "status": "ok",
+            "feedback_id": feedback_id,
+            "query_hash": _query_class(query),
+            "query_text": query,
+            "doc_id": doc_id,
+            "chunk_id": chunk_id,
+            "agent_id": agent_id,
+            "useful": bool(useful),
+        }
+
+    def _feedback_demotions(self, query: str, agent_id: Optional[str]) -> Dict[int, float]:
+        """Return capped per-doc demotions for this agent/query class."""
+        if not getattr(self.config, "feedback_enabled", True):
+            return {}
+        now = time.time()
+        if now - self._feedback_cache_loaded_at > 60:
+            self._refresh_feedback_cache()
+        return self._feedback_cache.get((agent_id or "main", _query_class(query)), {})
+
+    def _refresh_feedback_cache(self) -> None:
+        """Refresh recent negative feedback cache; failures degrade to no demotion."""
+        cache = {}
+        cutoff = int(time.time()) - 30 * 86400
+        try:
+            with self.db.cursor() as c:
+                c.execute(
+                    """SELECT query_text, doc_id, agent_id, useful, COUNT(*) AS votes
+                       FROM feedback
+                       WHERE created_at >= ? AND doc_id IS NOT NULL
+                       GROUP BY query_text, doc_id, agent_id, useful""",
+                    (cutoff,),
+                )
+                rows = c.fetchall()
+        except Exception as exc:
+            logger.debug("feedback cache refresh skipped: %s", exc)
+            self._feedback_cache = {}
+            self._feedback_cache_loaded_at = time.time()
+            return
+
+        for row in rows:
+            if int(row["useful"] or 0) != 0:
+                continue
+            key = (row["agent_id"] or "main", _query_class(row["query_text"] or ""))
+            doc_id = row["doc_id"]
+            demote = max(-0.3, -0.05 * int(row["votes"] or 0))
+            cache.setdefault(key, {})[doc_id] = min(
+                demote,
+                cache.setdefault(key, {}).get(doc_id, 0.0),
+            )
+
+        self._feedback_cache = cache
+        self._feedback_cache_loaded_at = time.time()
+
+    def _apply_feedback_demotions(
+        self,
+        merged: List[Dict],
+        query: str,
+        agent_id: Optional[str],
+    ) -> List[Dict]:
+        demotions = self._feedback_demotions(query, agent_id)
+        if not demotions:
+            return merged
+        for r in merged:
+            demote = demotions.get(r["doc_id"], 0.0)
+            r["feedback_demote"] = demote
+            base_score = r.get("rerank_score", r.get("final_score", 0.0))
+            r["feedback_adjusted_score"] = base_score + demote
+            if demote:
+                r["final_score"] = r.get("final_score", 0.0) + demote
+        merged.sort(
+            key=lambda x: x.get(
+                "feedback_adjusted_score",
+                x.get("rerank_score", x.get("final_score", 0.0)),
+            ),
+            reverse=True,
+        )
+        return merged
 
     # ── Reciprocal Rank Fusion ─────────────────────────────────
 
@@ -1033,6 +1186,28 @@ class RetrievalEngine:
         Existing callers that pass no depth receive identical results (snippet).
         With backend=None (default), results are bit-identical to pre-PR-3.
         """
+        total_t0 = time.perf_counter()
+        timing = {
+            "fts_ms": 0.0,
+            "embedding_ms": 0.0,
+            "semantic_ms": 0.0,
+            "ce_ms": 0.0,
+            "total_ms": 0.0,
+        }
+        trace = {
+            "query": query,
+            "variants": [query],
+            "fts_hits": [],
+            "semantic_hits": [],
+            "rrf": {},
+            "cross_encoder_scores": [],
+            "decay_factors": [],
+            "final_ordering": [],
+            "hyde": {"triggered": False},
+            "backends": [],
+            "timing": timing,
+        }
+
         if sort not in ("semantic", "chronological"):
             logger.warning("Unknown sort=%r, falling back to 'semantic'", sort)
             sort = "semantic"
@@ -1040,19 +1215,35 @@ class RetrievalEngine:
         rerank_k = self.config.reranker_top_k if self.config.reranker_enabled else limit
 
         if sort == "chronological":
+            chrono_t0 = time.perf_counter()
             merged = self._chronological_search(query, rerank_k, layers, start_date, end_date)
+            timing["semantic_ms"] = round((time.perf_counter() - chrono_t0) * 1000, 3)
+            trace["backends"] = ["chronological-sql"]
             merged = merged[:limit]
         else:
             # Step 1-2: Dual retrieval
+            fts_t0 = time.perf_counter()
             fts_results = self._fts_search(query, rerank_k)
+            timing["fts_ms"] = round((time.perf_counter() - fts_t0) * 1000, 3)
+            trace["fts_hits"] = [
+                {
+                    "doc_id": r.get("doc_id"),
+                    "bm25": r.get("bm25_rank"),
+                    "rank": idx,
+                    "path": r.get("path"),
+                }
+                for idx, r in enumerate(fts_results, start=1)
+            ]
 
             # PR-3: When backend is provided, use it instead of (or in addition to)
             # the internal FAISSIndex.  With backend=None (default), the existing
             # _semantic_search path is taken — bit-identical to pre-PR-3.
             extra_backend_results: List[List[Dict]] = []
+            semantic_t0 = time.perf_counter()
             if backend is None:
                 # Default path — bit-identical to pre-PR-3
                 semantic_results = self._semantic_search(query, rerank_k)
+                trace["backends"] = ["faiss-disk"]
             elif isinstance(backend, list):
                 # Fan-out: build a MultiBackend from the list of backend names/objects
                 from backends.multi import MultiBackend
@@ -1069,10 +1260,24 @@ class RetrievalEngine:
                     hits = multi.search(query_emb, k=rerank_k)
                     # Convert VectorHit list to the dict format expected by _rrf_merge
                     semantic_results = self._hits_to_dicts(hits, query_emb)
+                trace["backends"] = [getattr(b, "name", str(b)) for b in resolved]
             else:
                 # Single explicit backend object
                 query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
                 semantic_results = self._backend_search(query_emb, rerank_k, backend)
+                trace["backends"] = [getattr(backend, "name", "custom")]
+            timing["semantic_ms"] = round((time.perf_counter() - semantic_t0) * 1000, 3)
+            timing["embedding_ms"] = timing["semantic_ms"]
+            trace["semantic_hits"] = [
+                {
+                    "doc_id": r.get("doc_id"),
+                    "chunk_id": r.get("chunk_id"),
+                    "cosine": r.get("similarity"),
+                    "rank": idx,
+                    "backend": r.get("backend_name", "faiss-disk"),
+                }
+                for idx, r in enumerate(semantic_results, start=1)
+            ]
 
             # Step 3: RRF merge — with extra streams if multi-backend
             if extra_backend_results:
@@ -1081,12 +1286,33 @@ class RetrievalEngine:
                 )
             else:
                 merged = self._rrf_merge(fts_results, semantic_results, rerank_k)
+            trace["rrf"] = {
+                "k": self.config.rrf_k,
+                "fts_weight": self.config.fts_weight,
+                "semantic_weight": self.config.semantic_weight,
+                "merged": [
+                    {
+                        "doc_id": r.get("doc_id"),
+                        "fts_rank": r.get("fts_rank"),
+                        "semantic_rank": r.get("sem_rank"),
+                        "rrf_score": r.get("rrf_score"),
+                        "final_score": r.get("final_score"),
+                    }
+                    for r in merged
+                ],
+            }
 
             merged = self._filter_candidates(merged, layers, start_date, end_date)
 
             # Step 4: Cross-encoder re-rank
             if self.config.reranker_enabled and self.reranker:
+                ce_t0 = time.perf_counter()
                 merged = self._rerank(query, merged)
+                timing["ce_ms"] = round((time.perf_counter() - ce_t0) * 1000, 3)
+                trace["cross_encoder_scores"] = [
+                    {"doc_id": r.get("doc_id"), "score": r.get("rerank_score")}
+                    for r in merged
+                ]
                 merged = merged[:self.config.reranker_final_k]
             else:
                 merged = merged[:limit]
@@ -1094,6 +1320,8 @@ class RetrievalEngine:
         # Optional agent filter
         if agent_id:
             merged = [r for r in merged if r["agent"] == agent_id or r["agent"] == "unknown"]
+
+        merged = self._apply_feedback_demotions(merged, query, agent_id)
 
         # PR-2: Status lifecycle filtering
         # default: skip superseded, rejected, draft, expired
@@ -1139,7 +1367,13 @@ class RetrievalEngine:
         for r in merged:
             # Build a rich intermediate dict with all raw fields available.
             # _apply_depth will project it down to the requested tier.
-            score = round(r.get("rerank_score", r.get("final_score", 0)), 4)
+            score = round(
+                r.get(
+                    "feedback_adjusted_score",
+                    r.get("rerank_score", r.get("final_score", 0)),
+                ),
+                4,
+            )
 
             # Compute age_days from indexed_at
             indexed_at = r.get("indexed_at")
@@ -1194,6 +1428,8 @@ class RetrievalEngine:
                 "chunk_id": r.get("chunk_id"),
                 "backend": "faiss-disk",
             }
+            if "feedback_demote" in r:
+                provenance["feedback_demote"] = r.get("feedback_demote", 0.0)
 
             raw = {
                 "doc_id": r["doc_id"],
@@ -1247,6 +1483,29 @@ class RetrievalEngine:
                            WHERE doc_id = ?""",
                         (time.time(), r["doc_id"]),
                     )
+
+        trace["decay_factors"] = [
+            {"doc_id": r.get("doc_id"), "decay_factor": r.get("decay_score")}
+            for r in merged
+        ]
+        trace["final_ordering"] = [
+            {
+                "doc_id": r.get("doc_id"),
+                "chunk_id": r.get("chunk_id"),
+                "score": r.get("rerank_score", r.get("final_score", 0.0)),
+                "feedback_demote": r.get("feedback_demote", 0.0),
+                "adjusted_score": r.get("feedback_adjusted_score"),
+            }
+            for r in merged
+        ]
+        timing["total_ms"] = round((time.perf_counter() - total_t0) * 1000, 3)
+        try:
+            self.last_trace_id = _trace_ring().add(trace)
+            for result in results:
+                result["trace_id"] = self.last_trace_id
+        except Exception as exc:
+            logger.debug("trace capture failed: %s", exc)
+            self.last_trace_id = None
 
         return results
 

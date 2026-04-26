@@ -20,6 +20,7 @@ import sqlite3
 import tempfile
 import json
 import time
+from pathlib import Path
 
 import pytest
 import numpy as np
@@ -399,7 +400,12 @@ class TestMigration002:
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 5, f"Expected user_version=5, got {version}"
+        migrations_dir = Path(os.path.dirname(__file__)) / "migrations"
+        expected = max(
+            int(p.name.split("_", 1)[0])
+            for p in migrations_dir.glob("[0-9][0-9][0-9]_*.sql")
+        )
+        assert version == expected, f"Expected user_version={expected}, got {version}"
 
     def test_score_distribution_table_exists(self, tmp_path):
         """Migration 002 creates score_distribution table."""
