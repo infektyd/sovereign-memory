@@ -116,6 +116,14 @@ class SovereignConfig:
                 "interval_seconds": 24 * 60 * 60,
                 "lookback_hours": 24,
             },
+            "synthesis": {
+                "interval_seconds": 24 * 60 * 60,
+                "stale_after_days": 30,
+            },
+            "procedure_extraction": {
+                "interval_seconds": 24 * 60 * 60,
+                "lookback_days": 90,
+            },
         },
     })
 

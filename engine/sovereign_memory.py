@@ -407,7 +407,7 @@ def cmd_compile(args):
             dry_run = False
             i += 1
         else:
-            print("Usage: sovereign_memory.py compile --pass session_distillation [--dry-run|--wet-run] [--vault <path>]")
+            print("Usage: sovereign_memory.py compile --pass <session_distillation|synthesis|procedure_extraction> [--dry-run|--wet-run] [--vault <path>]")
             sys.exit(1)
 
     if not getattr(DEFAULT_CONFIG, "afm_loop_schedule", {}).get("enabled", False):
@@ -421,17 +421,22 @@ def cmd_compile(args):
         }, indent=2))
         return
 
-    if pass_name != "session_distillation":
+    pass_runners = {
+        "session_distillation": "afm_passes.session_distillation",
+        "synthesis": "afm_passes.synthesis",
+        "procedure_extraction": "afm_passes.procedure_extraction",
+    }
+    if pass_name not in pass_runners:
         print(json.dumps({"status": "error", "error": f"unsupported pass: {pass_name}"}, indent=2))
         sys.exit(2)
 
     import uuid
-    from afm_passes.session_distillation import run as run_session_distillation
+    pass_module = __import__(pass_runners[pass_name], fromlist=["run"])
 
     db = SovereignDB(DEFAULT_CONFIG)
     trace_id = f"afm-{uuid.uuid4().hex[:12]}"
     try:
-        result = run_session_distillation(db, DEFAULT_CONFIG, vault_path=vault, dry_run=dry_run, trace_id=trace_id)
+        result = pass_module.run(db, DEFAULT_CONFIG, vault_path=vault, dry_run=dry_run, trace_id=trace_id)
         if not dry_run and result.get("drafts"):
             from afm_writer import submit_drafts
             result.update(submit_drafts({
