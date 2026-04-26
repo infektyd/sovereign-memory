@@ -87,16 +87,16 @@ flowchart LR
 
 ## Core Runtime
 
-The Python engine lives in `engine/`.
+The Python engine lives in [engine/](engine/).
 
-- `sovrd.py` exposes the local JSON-RPC daemon.
-- `sovereign_memory.py` exposes CLI commands for indexing, stats, hygiene,
+- [engine/sovrd.py](engine/sovrd.py) exposes the local JSON-RPC daemon.
+- [engine/sovereign_memory.py](engine/sovereign_memory.py) exposes CLI commands for indexing, stats, hygiene,
   vector status, and AFM compile dry-runs.
-- `db.py` owns schema creation and migrations. Migrations are additive and
+- [engine/db.py](engine/db.py) owns schema creation and migrations. Migrations are additive and
   tracked by name plus `PRAGMA user_version`.
-- `retrieval.py` combines FTS5, semantic vectors, reranking, feedback, query
+- [engine/retrieval.py](engine/retrieval.py) combines FTS5, semantic vectors, reranking, feedback, query
   expansion, HyDE, token budgets, and trace capture.
-- `afm_passes/` contains the self-organization passes. They default to dry-run
+- [engine/afm_passes/](engine/afm_passes/) contains the self-organization passes. They default to dry-run
   and degrade cleanly when AFM is unavailable.
 
 SQLite is the durable runtime truth. Vault pages, graph exports, FAISS files,
@@ -104,13 +104,14 @@ and plugin context packs are derived or review surfaces.
 
 ## Plugin Surfaces
 
-The shared plugin lives in `plugins/sovereign-memory/` and ships multiple
+The shared plugin lives in [plugins/sovereign-memory/](plugins/sovereign-memory/) and ships multiple
 agent-facing manifests from one TypeScript MCP server:
 
-- `.codex-plugin/` for Codex.
-- `.claude-plugin/` plus `hooks/hooks.json` for Claude Code.
-- `.gemini-plugin/` for Gemini extension usage.
-- `.mcp.json` for direct MCP registration.
+- [plugins/sovereign-memory/.codex-plugin/](plugins/sovereign-memory/.codex-plugin/) for Codex.
+- [plugins/sovereign-memory/.claude-plugin/](plugins/sovereign-memory/.claude-plugin/) plus
+  [plugins/sovereign-memory/hooks/hooks.json](plugins/sovereign-memory/hooks/hooks.json) for Claude Code.
+- [plugins/sovereign-memory/.gemini-plugin/](plugins/sovereign-memory/.gemini-plugin/) for Gemini extension usage.
+- [plugins/sovereign-memory/.mcp.json](plugins/sovereign-memory/.mcp.json) for direct MCP registration.
 
 The plugin exposes:
 
@@ -215,7 +216,7 @@ npm run smoke:hook
 
 Also run a temp-state live smoke:
 
-- Start `engine/sovrd.py` on a temporary Unix socket.
+- Start [engine/sovrd.py](engine/sovrd.py) on a temporary Unix socket.
 - Call plugin helpers for status, recall, compile dry-run, and handoff.
 - Verify redaction, traceability, and clean SIGTERM shutdown.
 - Run migration safety on a SQLite backup, never directly on the live DB.
@@ -225,14 +226,14 @@ The v4 acceptance baseline is `213 passed, 3 skipped` for engine tests and
 
 ## Repository Map
 
-- `engine/` - Python daemon, retrieval, migrations, AFM passes, eval harness.
-- `plugins/sovereign-memory/` - shared MCP plugin for Codex, Claude Code, and
+- [engine/](engine/) - Python daemon, retrieval, migrations, AFM passes, eval harness.
+- [plugins/sovereign-memory/](plugins/sovereign-memory/) - shared MCP plugin for Codex, Claude Code, and
   Gemini.
-- `openclaw-extension/` - OpenClaw bridge and import tooling.
-- `docs/contracts/` - policy, threat model, page types, capabilities, and
+- [openclaw-extension/](openclaw-extension/) - OpenClaw bridge and import tooling.
+- [docs/contracts/](docs/contracts/) - policy, threat model, page types, capabilities, and
   workflow contracts.
-- `docs/plans/execution/` - v3.1 to v4 rollout PR specs and resume ledger.
-- `eval/` - recall fixtures and generated evaluation reports.
+- [docs/plans/execution/](docs/plans/execution/) - v3.1 to v4 rollout PR specs and resume ledger.
+- [eval/](eval/) - recall fixtures and generated evaluation reports.
 
 For local path layout and symlink compatibility notes, see
-`docs/CANONICAL-PATHS.md`.
+[docs/CANONICAL-PATHS.md](docs/CANONICAL-PATHS.md).
