@@ -1538,9 +1538,14 @@ async def _serve_unix_socket(path: Path):
 
     try:
         async with _server:
-            await _server.serve_forever()
+            while _running:
+                await asyncio.sleep(0.2)
     except asyncio.CancelledError:
         pass
+    finally:
+        if _server is not None:
+            _server.close()
+            await _server.wait_closed()
 
 
 # ── HTTP fallback server (optional) ──────────────────────────────────────
@@ -1674,6 +1679,11 @@ def main():
         sig_name = signal.Signals(signum).name
         logger.info("Received %s, shutting down…", sig_name)
         _running = False
+        if _server is not None:
+            _server.close()
+        main_task.cancel()
+        if http_task is not None:
+            http_task.cancel()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)

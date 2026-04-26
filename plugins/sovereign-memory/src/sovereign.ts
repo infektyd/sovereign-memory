@@ -117,6 +117,8 @@ export async function afmHealth(url = AFM_HEALTH_URL): Promise<JsonResult> {
 }
 
 export async function socketHealth(): Promise<JsonResult> {
+  const rpc = await jsonRpcSocketRequestWithFallback("status", {});
+  if (rpc.ok) return rpc;
   return socketRequest("GET", "/health");
 }
 
@@ -127,6 +129,14 @@ export async function recallMemory(input: {
   workspaceId?: string;
   limit?: number;
 }): Promise<JsonResult<RecallResponse>> {
+  const rpc = await jsonRpcSocketRequestWithFallback("search", {
+    query: input.query,
+    agent_id: input.agentId ?? DEFAULT_AGENT_ID,
+    layers: input.layer ? [input.layer] : undefined,
+    limit: input.limit,
+  }) as JsonResult<RecallResponse>;
+  if (rpc.ok) return rpc;
+
   const params = new URLSearchParams();
   params.set("q", input.query);
   params.set("agent_id", input.agentId ?? DEFAULT_AGENT_ID);
@@ -142,15 +152,22 @@ export async function learnMemory(input: {
   agentId?: string;
   workspaceId?: string;
 }): Promise<JsonResult> {
-  return socketRequest("POST", "/learn", {
+  const body = {
     content: input.content,
     category: input.category ?? "general",
     agent_id: input.agentId ?? DEFAULT_AGENT_ID,
     workspace_id: input.workspaceId ?? DEFAULT_WORKSPACE_ID,
-  });
+  };
+  const rpc = await jsonRpcSocketRequestWithFallback("learn", body);
+  if (rpc.ok) return rpc;
+  return socketRequest("POST", "/learn", body);
 }
 
 export type JsonRpcRequester = (socketPath: string, method: string, params: Record<string, unknown>) => Promise<JsonResult>;
+
+function jsonRpcSocketCandidates(): string[] {
+  return [...new Set([SOCKET_PATH, "/tmp/sovrd.sock"])];
+}
 
 export function jsonRpcSocketRequest(socketPath: string, method: string, params: Record<string, unknown>): Promise<JsonResult> {
   return new Promise((resolve) => {
@@ -167,7 +184,7 @@ export function jsonRpcSocketRequest(socketPath: string, method: string, params:
       client.destroy();
       resolve(result);
     };
-    client.setTimeout(2500, () => finish({ ok: false, error: "JSON-RPC request timed out" }));
+    client.setTimeout(30000, () => finish({ ok: false, error: "JSON-RPC request timed out" }));
     client.on("connect", () => {
       client.write(`${JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params })}\n`);
     });
@@ -201,14 +218,17 @@ export async function handoffMemory(input: {
   toAgent: string;
   packet: Record<string, unknown>;
 }): Promise<JsonResult> {
-  const socketCandidates = [...new Set([SOCKET_PATH, "/tmp/sovrd.sock"])];
+  return jsonRpcSocketRequestWithFallback("daemon.handoff", {
+    from_agent: input.fromAgent,
+    to_agent: input.toAgent,
+    packet: input.packet,
+  });
+}
+
+async function jsonRpcSocketRequestWithFallback(method: string, params: Record<string, unknown>): Promise<JsonResult> {
   let last: JsonResult = { ok: false, error: "No socket attempted" };
-  for (const socketPath of socketCandidates) {
-    last = await jsonRpcSocketRequest(socketPath, "daemon.handoff", {
-      from_agent: input.fromAgent,
-      to_agent: input.toAgent,
-      packet: input.packet,
-    });
+  for (const socketPath of jsonRpcSocketCandidates()) {
+    last = await jsonRpcSocketRequest(socketPath, method, params);
     if (last.ok) return last;
   }
   return last;
@@ -222,7 +242,7 @@ export async function compileVault(
   },
   requester: JsonRpcRequester = jsonRpcSocketRequest,
 ): Promise<JsonResult> {
-  const socketCandidates = [...new Set([SOCKET_PATH, "/tmp/sovrd.sock"])];
+  const socketCandidates = jsonRpcSocketCandidates();
   let last: JsonResult = { ok: false, error: "No socket attempted" };
   for (const socketPath of socketCandidates) {
     last = await requester(socketPath, "daemon.compile", {

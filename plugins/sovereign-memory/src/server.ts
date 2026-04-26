@@ -128,7 +128,7 @@ server.registerTool(
     description:
       "Run an opt-in AFM compile pass against the vault. Defaults to dry-run and only drafts pages for review.",
     inputSchema: {
-      passName: z.enum(["session_distillation"]).optional(),
+      passName: z.enum(["session_distillation", "synthesis", "procedure_extraction", "reorganization", "pruning"]).optional(),
       vaultPath: z.string().optional(),
       dryRun: z.boolean().optional(),
     },

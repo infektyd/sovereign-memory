@@ -127,6 +127,7 @@ def test_status_includes_latency_histograms(monkeypatch):
     import sovrd
 
     monkeypatch.setattr(sovrd, "_request_count", 0)
+    monkeypatch.setattr(sovrd, "_latencies", {})
     for value in (0.01, 0.02, 0.03, 0.04):
         sovrd._record_latency("search", value)
 
