@@ -58,9 +58,9 @@
 | PR-6 | W4 | MERGED | `.claude/worktrees/pr-06-contradictions` | `pr-06-contradictions` | `38e0647` | Merged into orchestration. 114 passed, 3 skipped; focused contradictions suite 34 passed. |
 | PR-5 | W5 | MERGED | `.claude/worktrees/pr-05-cache-layers` | `pr-05-cache-layers` | `3da5caf` | Merged into orchestration as `c5ba9e5`. Focused W5 integration tests 64 passed, 3 skipped. Post-merge DB init ordering fix included in orchestration. |
 | PR-9 | W5 | MERGED | `.claude/worktrees/pr-09-feedback-trace` | `pr-09-feedback-trace` | `78987b1` | Merged into orchestration as `1dcb6d4`; additive conflicts resolved in `WORKTREE_STATE.md` and `retrieval.py`. Focused W5 integration tests 64 passed, 3 skipped. |
-| PR-7 | W6 | IN_FLIGHT | `.claude/worktrees/pr-07-query-expansion` | `pr-07-query-expansion` | `6c39436` | Dispatched from W5-complete orchestration HEAD. |
-| PR-8 | W6 | IN_FLIGHT | `.claude/worktrees/pr-08-hyde` | `pr-08-hyde` | `6c39436` | Dispatched from W5-complete orchestration HEAD. |
-| PR-15 | W6 | IN_FLIGHT | `.claude/worktrees/pr-15-quant-semantic` | `pr-15-quant-semantic` | `6c39436` | Dispatched from W5-complete orchestration HEAD. |
+| PR-7 | W6 | MERGED | `.claude/worktrees/pr-07-query-expansion` | `pr-07-query-expansion` | `ccc60ae` | Merged into orchestration as `c6bc45e`. Worker concern: npm unavailable in isolated worktree; wave-level npm verification covers this. |
+| PR-8 | W6 | MERGED | `.claude/worktrees/pr-08-hyde` | `pr-08-hyde` | `ad72008` | Merged into orchestration as `c2206ed`; additive conflicts resolved in `WORKTREE_STATE.md`, `config.py`, `eval/harness.py`, and `retrieval.py`. |
+| PR-15 | W6 | MERGED | `.claude/worktrees/pr-15-quant-semantic` | `pr-15-quant-semantic` | `f3085c1` | Merged into orchestration as `caee7fe`; additive conflicts resolved in `WORKTREE_STATE.md` and `eval/harness.py`. Worker concern: live FAISS unavailable, mock eval used. |
 | PR-10 | W7 | QUEUED | — | — | — | |
 | PR-11 | W7 | QUEUED | — | — | — | |
 | PR-12 | W8 | QUEUED | — | — | — | |
@@ -200,3 +200,4 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T18:31Z | W5 merge: PR-5 merged cleanly as `c5ba9e5`; PR-9 merged as `1dcb6d4` after additive `retrieval.py`/`WORKTREE_STATE.md` conflict resolution. Focused tests `pytest -q engine/test_pr5_cache_layers.py engine/test_pr9_feedback_trace.py engine/test_pr2_envelope.py` passed: 64 passed, 3 skipped. |
 | 2026-04-26T18:38Z | W5 verification passed after orchestration fix: `cd engine && pytest -q` 174 passed / 3 skipped; `cd plugins/sovereign-memory && npm test` 29/29 passed; `npm run smoke:hook` returned valid envelope; migration safety on `/tmp/migration_check_w5.db` applied migrations 001-006, preserved 292 documents and 711 chunks, `PRAGMA user_version = 6`. |
 | 2026-04-26T18:44Z | W6 dispatch checkpoint: PR-7, PR-8, and PR-15 worktrees created off W5-complete orchestration HEAD `6c39436`; tracker marked all three `[A]`; implementers queued for parallel work. |
+| 2026-04-26T18:57Z | W6 merge: PR-7 merged cleanly as `c6bc45e`; PR-8 merged as `c2206ed` after additive conflicts; PR-15 merged as `caee7fe` after additive conflicts. Focused W6 tests `pytest -q engine/test_pr7_query_expansion.py engine/test_pr8_hyde.py engine/test_pr15_quant_semantic.py engine/test_pr4_eval_harness.py` passed: 57 passed. |
