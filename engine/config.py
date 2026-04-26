@@ -100,6 +100,11 @@ class SovereignConfig:
     # Single value ["faiss-disk"] produces bit-identical results to pre-PR-3.
     vector_backends: list = field(default_factory=lambda: ["faiss-disk"])
 
+    # Contradiction detection (PR-6)
+    # Cosine similarity threshold above which two learnings are considered
+    # contradictory. Callers can override per-request via the 'threshold' param.
+    contradiction_threshold: float = 0.85
+
     # Thread propagation
     thread_bind_threshold: float = 0.55
 

@@ -6,7 +6,7 @@ Covers:
   2.2  compute_confidence: over known distribution
   2.3  is_instruction_like: positive + negative examples
   2.4  explain(result_record): deterministic rationale output
-  2.5  Migration 002: user_version bumps to 2
+  2.5  Migration 002: user_version reaches the current migration target
   2.6  Default-recall filtering: superseded/rejected/draft excluded
   2.7  include_* flags restore filtered results
   2.8  Envelope fields: all PR-2 keys present in snippet output
@@ -372,7 +372,7 @@ class TestExplain:
 
 
 # ---------------------------------------------------------------------------
-# 2.5  Migration 002: user_version bumps to 2
+# 2.5  Migration 002: user_version reaches the current migration target
 # ---------------------------------------------------------------------------
 
 class TestMigration002:
@@ -399,7 +399,7 @@ class TestMigration002:
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 3, f"Expected user_version=3, got {version}"
+        assert version == 5, f"Expected user_version=5, got {version}"
 
     def test_score_distribution_table_exists(self, tmp_path):
         """Migration 002 creates score_distribution table."""

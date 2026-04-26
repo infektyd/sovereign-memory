@@ -176,9 +176,12 @@ def _execute_tolerant(conn: sqlite3.Connection, statement: str) -> None:
         if "duplicate column" in msg or "already exists" in msg:
             # Idempotent: column or table already present — safe to skip
             logger.debug("Ignoring idempotent DDL error: %s", e)
-        elif "no such table" in msg and statement.strip().upper().startswith("ALTER"):
-            # ALTER TABLE on a missing table: the table will be created by _init_schema
-            # on the next full DB initialization. Skip gracefully.
+        elif "no such table" in msg and (
+            statement.strip().upper().startswith("ALTER")
+            or statement.strip().upper().startswith("CREATE INDEX")
+        ):
+            # DDL against a missing table: the table will be created by
+            # _init_schema on the next full DB initialization. Skip gracefully.
             logger.debug("Ignoring ALTER on missing table (will be created by _init_schema): %s", e)
         else:
             raise
