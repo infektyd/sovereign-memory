@@ -38,7 +38,7 @@ export SOVEREIGN_AFM_PREPARE_TASK_URL=http://127.0.0.1:11437/v1/chat/completions
 Install in Claude Code (local plugin dir, or via marketplace):
 
 ```bash
-claude plugin install --plugin-dir /Users/hansaxelsson/SovereignMemory/plugins/sovereign-memory
+claude plugin install --plugin-dir /Users/hansaxelsson/sovereignMemory/plugins/sovereign-memory
 ```
 
 The Claude Code surface adds:

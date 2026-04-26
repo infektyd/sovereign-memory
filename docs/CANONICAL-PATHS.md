@@ -2,7 +2,7 @@
 
 This folder is the canonical home for Sovereign Memory on this machine:
 
-`/Users/hansaxelsson/SovereignMemory`
+`/Users/hansaxelsson/sovereignMemory`
 
 It is also the canonical Git working tree for
 `https://github.com/infektyd/sovereign-memory`. The live layout is intentional:
@@ -11,6 +11,10 @@ runtime integrations use `engine/`, `openclaw-extension/`, and
 
 Use this page to avoid guessing between older root-level, OpenClaw, Hermes, and
 downloaded paths.
+
+Older notes may still spell this path as `/Users/hansaxelsson/SovereignMemory`.
+On this macOS volume that resolves to the same directory, but new docs and
+symlink targets should use `/Users/hansaxelsson/sovereignMemory`.
 
 ## Active Core
 
