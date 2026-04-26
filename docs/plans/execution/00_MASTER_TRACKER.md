@@ -31,11 +31,11 @@
 |---|-----|----------|-------|------------|--------|
 | 01 | PR-1 | 0.1, 0.2, 0.3 | Schema versioning, model singletons, tiktoken | — | `[x]` |
 | 02 | PR-1b | 0.4, 0.5, 0.6 | Agent contract, vault contract, progressive disclosure | — | `[x]` |
-| 03 | PR-2 | 1.1, 1.2, 1.3 | Persistent FAISS, result envelope, vault page schema | PR-1 | `[A]` |
-| 04 | PR-3 | 2.1–2.5 | Storage abstraction (VectorBackend protocol) | PR-2 | `[ ]` |
-| 05 | PR-4 | 3.0 | Eval harness, policy docs, workflows | PR-2 | `[ ]` |
+| 03 | PR-2 | 1.1, 1.2, 1.3 | Persistent FAISS, result envelope, vault page schema | PR-1 | `[x]` |
+| 04 | PR-3 | 2.1–2.5 | Storage abstraction (VectorBackend protocol) | PR-2 | `[A]` |
+| 05 | PR-4 | 3.0 | Eval harness, policy docs, workflows | PR-2 | `[A]` |
 | 06 | PR-5 | 3.1, 3.2 | Cross-encoder cache, layer-aware retrieval | PR-2 | `[ ]` |
-| 07 | PR-6 | 3.3 | Structured learnings + contradiction detection | PR-2 | `[ ]` |
+| 07 | PR-6 | 3.3 | Structured learnings + contradiction detection | PR-2 | `[A]` |
 | 08 | PR-7 | 3.4 | Query expansion (rule-based + AFM opt-in) | PR-4 (eval gate) | `[ ]` |
 | 09 | PR-8 | 3.5 | HyDE for cold queries | PR-4 (eval gate) | `[ ]` |
 | 10 | PR-9 | 4.1, 4.2 | Negative feedback + per-query trace | PR-2 | `[ ]` |

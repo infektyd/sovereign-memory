@@ -52,10 +52,10 @@
 |----|------|--------|----------|--------|----------|-------|
 | PR-1 | W1 | MERGED | (removed) | `pr-01-foundation` | `7a09fc4` | Merged via `--no-ff` into orchestration. 13/13 pytest, 29/29 npm. |
 | PR-1b | W2 | MERGED | (removed) | `pr-01b-contracts` | `cafb5bb` | 31/31 pytest, 29/29 npm. |
-| PR-2 | W3 | IN_FLIGHT | `.claude/worktrees/pr-02-faiss-envelope` | `pr-02-faiss-envelope` | (pending) | W3 solo — FAISS persistence, result envelope, vault page schema. |
-| PR-3 | W4 | QUEUED | — | — | — | |
-| PR-4 | W4 | QUEUED | — | — | — | |
-| PR-6 | W4 | QUEUED | — | — | — | |
+| PR-2 | W3 | MERGED | (removed) | `pr-02-faiss-envelope` | `be4492e` | 80 passed, 3 skipped (faiss-cpu missing); 29/29 npm; cold-start 15.7ms. |
+| PR-3 | W4 | IN_FLIGHT | `.claude/worktrees/pr-03-storage` | `pr-03-storage` | (pending) | Adds migration 003. Touches retrieval.py + sovrd.py + config.py + new backends/. |
+| PR-4 | W4 | IN_FLIGHT | `.claude/worktrees/pr-04-eval-harness` | `pr-04-eval-harness` | (pending) | All-new files: engine/eval/, eval/, docs/contracts/POLICY|THREAT_MODEL|WORKFLOWS.md. Zero merge risk. |
+| PR-6 | W4 | IN_FLIGHT | `.claude/worktrees/pr-06-contradictions` | `pr-06-contradictions` | (pending) | Adds migration 005 (NUMBERING IS INTENTIONAL — runner now tracks by name not user_version). Touches writeback.py + sovrd.py (different methods than PR-3). |
 | PR-5 | W5 | QUEUED | — | — | — | |
 | PR-9 | W5 | QUEUED | — | — | — | |
 | PR-7 | W6 | QUEUED | — | — | — | |
@@ -191,3 +191,6 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T19:52Z | PR-1 worktree removed. PR-1b worktree created off orchestration HEAD. PR-1b dispatched. |
 | 2026-04-26T20:05Z | PR-1b implementer reported DONE: cafb5bb + e9988d0. 31/31 pytest, 29/29 npm. |
 | 2026-04-26T20:06Z | PR-1b merged into orchestration via --no-ff. PR-2 worktree created. PR-2 dispatched. |
+| 2026-04-26T20:25Z | PR-2 implementer reported DONE: be4492e + 65519e1. 80 passed, 3 skipped, 29/29 npm. PR-2 merged. |
+| 2026-04-26T20:30Z | INFRA FIX: patched engine/migrations.py to track applied migrations by name (schema_migrations table). Old runner gated on user_version, which would silently skip migration 004 (PR-5) after 005 (PR-6) lands in W4. Back-fills automatically against existing user_version. 80 prior tests still green. |
+| 2026-04-26T20:32Z | W4 dispatch: PR-3, PR-4, PR-6 worktrees created off orchestration HEAD. All three implementers dispatched in parallel. |

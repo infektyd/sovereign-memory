@@ -51,41 +51,84 @@ def _load_migration_files():
     return entries
 
 
+def _ensure_tracking_table(conn: sqlite3.Connection) -> None:
+    """
+    Create schema_migrations tracking table on first use, and back-fill it
+    against PRAGMA user_version so DBs migrated under the old runner are
+    assumed to have applied every migration up to their current version.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        " version INTEGER PRIMARY KEY,"
+        " name TEXT NOT NULL,"
+        " applied_at INTEGER NOT NULL"
+        ")"
+    )
+    row = conn.execute("PRAGMA user_version").fetchone()
+    current_version = row[0] if row else 0
+    if current_version == 0:
+        return
+    # Back-fill: assume any migration file with version <= current_version was
+    # applied by the legacy user_version-gated runner.
+    existing = {
+        v for (v,) in conn.execute("SELECT version FROM schema_migrations")
+    }
+    if existing:
+        return  # tracking table already populated
+    import time as _time
+    now = int(_time.time())
+    for version, filepath in _load_migration_files():
+        if version <= current_version:
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (version, os.path.basename(filepath), now),
+            )
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """
     Run all pending migrations against *conn*.
 
-    Reads current user_version, finds all migration scripts with a version
-    number greater than current, and runs them in a single transaction.
-    Bumps PRAGMA user_version to the highest applied version on success.
+    Migrations are applied by NAME, not by user_version. This lets parallel
+    development branches add e.g. 003 and 005 in one wave and 004 in the next
+    without 004 getting silently skipped (which the original user_version-only
+    gating would do).
 
-    Args:
-        conn: An open sqlite3.Connection. The caller owns this connection;
-              this function does not close it.
+    Reads schema_migrations table for the set of applied versions, then runs
+    every file whose version is not in that set. Each apply records itself in
+    schema_migrations and bumps user_version to the highest known version on
+    success.
 
     Raises:
         Exception: Re-raises any error that occurs during migration, after
-                   rolling back the transaction. user_version is left
-                   unchanged so the next startup retries cleanly.
+                   rolling back the transaction. schema_migrations and
+                   user_version are left unchanged so the next startup retries
+                   cleanly.
     """
-    # Read current schema version
-    row = conn.execute("PRAGMA user_version").fetchone()
-    current_version = row[0] if row else 0
+    _ensure_tracking_table(conn)
+
+    applied_versions = {
+        v for (v,) in conn.execute("SELECT version FROM schema_migrations")
+    }
 
     migration_files = _load_migration_files()
-    pending = [(v, p) for v, p in migration_files if v > current_version]
+    pending = [(v, p) for v, p in migration_files if v not in applied_versions]
 
     if not pending:
-        logger.debug("Schema is up-to-date (user_version=%d)", current_version)
+        row = conn.execute("PRAGMA user_version").fetchone()
+        logger.debug("Schema is up-to-date (user_version=%d)", row[0] if row else 0)
         return
 
-    target_version = pending[-1][0]
+    pending.sort(key=lambda x: x[0])
+    target_version = max(v for v, _ in migration_files)  # highest known
     logger.info(
-        "Running %d migration(s): user_version %d → %d",
-        len(pending), current_version, target_version,
+        "Running %d migration(s); target user_version=%d",
+        len(pending), target_version,
     )
 
-    # Run all pending scripts in one transaction
+    import time as _time
+    now = int(_time.time())
+
     try:
         conn.execute("BEGIN IMMEDIATE")
 
@@ -93,19 +136,22 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             logger.info("  Applying migration %03d: %s", version, os.path.basename(filepath))
             with open(filepath, "r", encoding="utf-8") as fh:
                 sql = fh.read()
-            # executescript auto-commits, so we use execute for each statement
             for statement in _split_statements(sql):
                 if statement.strip():
                     _execute_tolerant(conn, statement)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+                (version, os.path.basename(filepath), now),
+            )
 
-        # Bump user_version — PRAGMA cannot be parameterized, must use f-string
+        # Bump user_version to highest known — PRAGMA cannot be parameterized
         conn.execute(f"PRAGMA user_version = {target_version}")
         conn.commit()
         logger.info("Migrations complete. user_version=%d", target_version)
 
     except Exception:
         conn.rollback()
-        logger.exception("Migration failed — rolled back. user_version unchanged.")
+        logger.exception("Migration failed — rolled back. State unchanged.")
         raise
 
 
