@@ -43,7 +43,7 @@
 | 12 | PR-11 | 4.5, 5.x | Provenance edges, health, stats, hygiene | PR-2, PR-6 | `[x]` |
 | 13 | PR-12 | 6 PR-A | AFM scheduler + session distillation pass | PR-11 | `[x]` |
 | 14 | PR-13 | 6 PR-B | Synthesis + procedure extraction passes | PR-12 | `[x]` |
-| 15 | PR-14 | 6 PR-C | Reorganization + pruning passes | PR-13 | `[ ]` |
+| 15 | PR-14 | 6 PR-C | Reorganization + pruning passes | PR-13 | `[A]` |
 | 16 | PR-15 | 7.1, 7.2 | Quantized embeddings, semantic chunking | PR-4 (eval gate) | `[x]` |
 
 ---

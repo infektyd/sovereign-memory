@@ -65,7 +65,7 @@
 | PR-11 | W7 | MERGED | `.claude/worktrees/pr-11-observability` | `pr-11-observability` | `fab7a72` | Merged into orchestration as `2cd85de`; additive conflicts resolved in `WORKTREE_STATE.md` and `sovrd.py`. |
 | PR-12 | W8 | MERGED | `.claude/worktrees/pr-12-afm-session-distill` | `pr-12-afm-session-distill` | `bffdb8b` | Merged into orchestration as `e96d8e1`. |
 | PR-13 | W9 | MERGED | `.claude/worktrees/pr-13-synthesis-procedures` | `pr-13-synthesis-procedures` | `25a2182` | Merged into orchestration as `db59541`. |
-| PR-14 | W10 | QUEUED | — | — | — | |
+| PR-14 | W10 | IN_FLIGHT | `.claude/worktrees/pr-14-reorg-pruning` | `pr-14-reorg-pruning` | `ee5f22d` | Dispatched from W9-verified orchestration HEAD. |
 
 ---
 
@@ -211,3 +211,4 @@ Process and failure modes are identical to the fresh dispatch.
 | 2026-04-26T19:50Z | W9 dispatch checkpoint: PR-13 worktree created off W8-verified orchestration HEAD `3ccddae`; tracker marked `[A]`; implementer queued. |
 | 2026-04-26T20:07Z | W9 merge: PR-13 merged cleanly as `db59541`; worker verification before merge reported `pytest -q engine` 209 passed / 3 skipped and plugin `npm test` 32/32 passed. |
 | 2026-04-26T20:13Z | W9 verification passed on orchestration: `cd engine && pytest -q` 209 passed / 3 skipped; `cd plugins/sovereign-memory && npm test` 32/32 passed; `npm run smoke:hook` returned valid envelope; migration safety on `/tmp/migration_check_w9.db` preserved 292 documents and 711 chunks, `PRAGMA user_version = 6`. |
+| 2026-04-26T20:17Z | W10 dispatch checkpoint: PR-14 worktree created off W9-verified orchestration HEAD `ee5f22d`; tracker marked `[A]`; implementer queued. |
