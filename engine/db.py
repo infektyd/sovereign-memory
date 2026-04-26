@@ -112,7 +112,15 @@ class SovereignDB:
                 indexed_at REAL,
                 access_count INTEGER DEFAULT 0,
                 last_accessed REAL,
-                decay_score REAL DEFAULT 1.0
+                decay_score REAL DEFAULT 1.0,
+                whole_document INTEGER DEFAULT 0,
+                -- PR-2: Page status lifecycle and privacy
+                page_status TEXT DEFAULT 'candidate',
+                privacy_level TEXT DEFAULT 'safe',
+                page_type TEXT,
+                superseded_by INTEGER,
+                expires_at REAL,
+                evidence_refs TEXT
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_doc_path ON documents(path)")

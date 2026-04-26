@@ -49,12 +49,35 @@ class VaultIndexer:
 
     @staticmethod
     def _extract_frontmatter(content: str) -> Dict[str, str]:
-        """Extract agent/sigil from YAML-style frontmatter."""
+        """
+        Extract agent/sigil and PR-2 status/privacy from YAML-style frontmatter.
+
+        PR-2: Also parses status, privacy, and page type.
+        """
         agent_m = re.search(r"agent:\s*(\w+)", content)
         sigil_m = re.search(r"sigil:\s*(.)", content)
+        status_m = re.search(r"status:\s*(\S+)", content)
+        privacy_m = re.search(r"privacy:\s*(\S+)", content)
+        type_m = re.search(r"type:\s*(\S+)", content)
+
+        status = (status_m.group(1).strip('"\'') if status_m else "candidate").lower()
+        privacy = (privacy_m.group(1).strip('"\'') if privacy_m else "safe").lower()
+        page_type = type_m.group(1).strip('"\'') if type_m else None
+
+        # Clamp to valid values
+        valid_statuses = {"draft", "candidate", "accepted", "superseded", "rejected", "expired"}
+        valid_privacies = {"safe", "local-only", "private", "blocked"}
+        if status not in valid_statuses:
+            status = "candidate"
+        if privacy not in valid_privacies:
+            privacy = "safe"
+
         return {
             "agent": agent_m.group(1) if agent_m else "unknown",
             "sigil": sigil_m.group(1) if sigil_m else "❓",
+            "page_status": status,
+            "privacy_level": privacy,
+            "page_type": page_type,
         }
 
     # ── Core indexing ──────────────────────────────────────────
@@ -98,21 +121,36 @@ class VaultIndexer:
                     meta = self._extract_frontmatter(content)
                     now = time.time()
 
+                    # PR-2: Skip pages with privacy: blocked
+                    if meta.get("privacy_level") == "blocked":
+                        logger.info("Skipping blocked page: %s", os.path.basename(path))
+                        stats["skipped"] += 1
+                        continue
+
                     if row:
                         doc_id = row["doc_id"]
                         c.execute(
                             """UPDATE documents
-                               SET agent=?, sigil=?, last_modified=?, indexed_at=?
+                               SET agent=?, sigil=?, last_modified=?, indexed_at=?,
+                                   page_status=?, privacy_level=?, page_type=?
                                WHERE doc_id=?""",
-                            (meta["agent"], meta["sigil"], mtime, now, doc_id),
+                            (meta["agent"], meta["sigil"], mtime, now,
+                             meta.get("page_status", "candidate"),
+                             meta.get("privacy_level", "safe"),
+                             meta.get("page_type"),
+                             doc_id),
                         )
                         c.execute("DELETE FROM vault_fts WHERE doc_id = ?", (doc_id,))
                         c.execute("DELETE FROM chunk_embeddings WHERE doc_id = ?", (doc_id,))
                     else:
                         c.execute(
-                            """INSERT INTO documents (path, agent, sigil, last_modified, indexed_at)
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (path, meta["agent"], meta["sigil"], mtime, now),
+                            """INSERT INTO documents (path, agent, sigil, last_modified, indexed_at,
+                                   page_status, privacy_level, page_type)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (path, meta["agent"], meta["sigil"], mtime, now,
+                             meta.get("page_status", "candidate"),
+                             meta.get("privacy_level", "safe"),
+                             meta.get("page_type")),
                         )
                         doc_id = c.lastrowid
 

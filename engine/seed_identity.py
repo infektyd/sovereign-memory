@@ -151,8 +151,31 @@ def get_embedding(text, model=None):
         return np.zeros(384, dtype=np.float32).tobytes()
 
 
+def _ensure_wiki_dirs():
+    """
+    PR-2: Ensure new vault wiki subdirectories exist on init.
+
+    Creates wiki/procedures/, wiki/artifacts/, wiki/handoffs/ in addition
+    to whatever the plugin creates.
+    """
+    vault_path = os.path.expanduser("~/wiki")
+    new_dirs = [
+        os.path.join(vault_path, "wiki", "procedures"),
+        os.path.join(vault_path, "wiki", "artifacts"),
+        os.path.join(vault_path, "wiki", "handoffs"),
+    ]
+    for d in new_dirs:
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception as e:
+            print(f"  WARNING: Could not create {d}: {e}", file=sys.stderr)
+
+
 def seed_identity():
     """Main seeding function."""
+    # PR-2: Ensure new wiki dirs exist
+    _ensure_wiki_dirs()
+
     discovery = discover_sources()
 
     conn = sqlite3.connect(DB_PATH)
