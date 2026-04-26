@@ -36,15 +36,15 @@
 | 05 | PR-4 | 3.0 | Eval harness, policy docs, workflows | PR-2 | `[x]` |
 | 06 | PR-5 | 3.1, 3.2 | Cross-encoder cache, layer-aware retrieval | PR-2 | `[x]` |
 | 07 | PR-6 | 3.3 | Structured learnings + contradiction detection | PR-2 | `[x]` |
-| 08 | PR-7 | 3.4 | Query expansion (rule-based + AFM opt-in) | PR-4 (eval gate) | `[ ]` |
-| 09 | PR-8 | 3.5 | HyDE for cold queries | PR-4 (eval gate) | `[ ]` |
+| 08 | PR-7 | 3.4 | Query expansion (rule-based + AFM opt-in) | PR-4 (eval gate) | `[A]` |
+| 09 | PR-8 | 3.5 | HyDE for cold queries | PR-4 (eval gate) | `[A]` |
 | 10 | PR-9 | 4.1, 4.2 | Negative feedback + per-query trace | PR-2 | `[x]` |
 | 11 | PR-10 | 4.6 | Agent inbox/outbox + handoff spec | PR-1b, PR-2 | `[ ]` |
 | 12 | PR-11 | 4.5, 5.x | Provenance edges, health, stats, hygiene | PR-2, PR-6 | `[ ]` |
 | 13 | PR-12 | 6 PR-A | AFM scheduler + session distillation pass | PR-11 | `[ ]` |
 | 14 | PR-13 | 6 PR-B | Synthesis + procedure extraction passes | PR-12 | `[ ]` |
 | 15 | PR-14 | 6 PR-C | Reorganization + pruning passes | PR-13 | `[ ]` |
-| 16 | PR-15 | 7.1, 7.2 | Quantized embeddings, semantic chunking | PR-4 (eval gate) | `[ ]` |
+| 16 | PR-15 | 7.1, 7.2 | Quantized embeddings, semantic chunking | PR-4 (eval gate) | `[A]` |
 
 ---
 
