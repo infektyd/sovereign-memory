@@ -96,7 +96,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             # executescript auto-commits, so we use execute for each statement
             for statement in _split_statements(sql):
                 if statement.strip():
-                    conn.execute(statement)
+                    _execute_tolerant(conn, statement)
 
         # Bump user_version — PRAGMA cannot be parameterized, must use f-string
         conn.execute(f"PRAGMA user_version = {target_version}")
@@ -107,6 +107,33 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         conn.rollback()
         logger.exception("Migration failed — rolled back. user_version unchanged.")
         raise
+
+
+def _execute_tolerant(conn: sqlite3.Connection, statement: str) -> None:
+    """
+    Execute a DDL statement, silently ignoring errors that are safe to ignore:
+
+    - "duplicate column name" → ALTER TABLE ADD COLUMN on an already-present column.
+      This happens when migrations are re-applied to a DB that was partially migrated
+      or when the base schema already contains the column.
+    - "table already exists" → caught by IF NOT EXISTS, but included for safety.
+
+    Any other error is re-raised so the caller's transaction can roll back.
+    """
+    import sqlite3 as _sqlite3
+    try:
+        conn.execute(statement)
+    except _sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if "duplicate column" in msg or "already exists" in msg:
+            # Idempotent: column or table already present — safe to skip
+            logger.debug("Ignoring idempotent DDL error: %s", e)
+        elif "no such table" in msg and statement.strip().upper().startswith("ALTER"):
+            # ALTER TABLE on a missing table: the table will be created by _init_schema
+            # on the next full DB initialization. Skip gracefully.
+            logger.debug("Ignoring ALTER on missing table (will be created by _init_schema): %s", e)
+        else:
+            raise
 
 
 def _split_statements(sql: str):

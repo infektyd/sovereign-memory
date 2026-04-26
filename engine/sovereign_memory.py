@@ -229,6 +229,89 @@ def cmd_stats(args):
     db.close()
 
 
+def cmd_faiss(args):
+    """
+    FAISS index management.
+
+    Usage:
+        python sovereign_memory.py faiss --rebuild   Force rebuild and save to disk.
+        python sovereign_memory.py faiss --status    Show cache status.
+    """
+    import time as _time
+    import numpy as np
+
+    if "--rebuild" in args or len(args) == 0:
+        # Force rebuild from DB then save to disk
+        print("Rebuilding FAISS index from DB...")
+        t0 = _time.time()
+
+        db = SovereignDB()
+        from faiss_index import FAISSIndex
+        from faiss_persist import compute_db_checksum
+
+        faiss_idx = FAISSIndex(DEFAULT_CONFIG)
+
+        chunk_ids = []
+        embeddings = []
+        with db.cursor() as c:
+            c.execute("SELECT chunk_id, embedding FROM chunk_embeddings")
+            for row in c.fetchall():
+                vec = np.frombuffer(row["embedding"], dtype=np.float32)
+                if vec.shape[0] == DEFAULT_CONFIG.embedding_dim:
+                    chunk_ids.append(row["chunk_id"])
+                    embeddings.append(vec)
+
+        if chunk_ids:
+            all_vecs = np.array(embeddings, dtype=np.float32)
+            faiss_idx.build_from_vectors(chunk_ids, all_vecs)
+            conn = db._get_conn()
+            saved = faiss_idx.save_to_disk(db_conn=conn)
+            elapsed = _time.time() - t0
+            print(json.dumps({
+                "status": "rebuilt" if saved else "rebuilt_no_save",
+                "vectors": len(chunk_ids),
+                "elapsed_ms": round(elapsed * 1000, 1),
+                "index_type": faiss_idx._current_type,
+            }, indent=2))
+        else:
+            print(json.dumps({"status": "empty", "vectors": 0}, indent=2))
+
+        db.close()
+
+    elif "--status" in args:
+        import os
+        from faiss_persist import _faiss_dir_for_db, compute_db_checksum
+        import sqlite3 as _sqlite3
+
+        faiss_dir = _faiss_dir_for_db(DEFAULT_CONFIG.db_path)
+        manifest_path = os.path.join(faiss_dir, "index.manifest.json")
+        faiss_path = manifest_path.replace(".manifest.json", ".faiss")
+
+        result = {
+            "manifest_path": manifest_path,
+            "faiss_path": faiss_path,
+            "manifest_exists": os.path.exists(manifest_path),
+            "faiss_exists": os.path.exists(faiss_path),
+        }
+
+        if os.path.exists(manifest_path):
+            import json as _json
+            with open(manifest_path) as f:
+                result["manifest"] = _json.load(f)
+
+        try:
+            conn = _sqlite3.connect(DEFAULT_CONFIG.db_path)
+            result["current_checksum"] = compute_db_checksum(conn)
+            conn.close()
+        except Exception as e:
+            result["checksum_error"] = str(e)
+
+        print(json.dumps(result, indent=2))
+    else:
+        print("Usage: sovereign_memory.py faiss [--rebuild | --status]")
+        sys.exit(1)
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -252,6 +335,7 @@ def main():
         "graph": cmd_graph,
         "watch": cmd_watch,
         "stats": cmd_stats,
+        "faiss": cmd_faiss,
     }
 
     if command in commands:

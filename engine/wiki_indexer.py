@@ -33,10 +33,19 @@ class WikiFrontmatter:
     title: str = ""
     created: str = ""
     updated: str = ""
-    page_type: str = "unknown"  # entity, concept, comparison, query, summary, decision, project
+    page_type: str = "unknown"  # entity, concept, decision, procedure, session, artifact, handoff, synthesis
     tags: List[str] = field(default_factory=list)
     sources: List[str] = field(default_factory=list)
+    status: str = "candidate"    # draft | candidate | accepted | superseded | rejected | expired
+    privacy: str = "safe"        # safe | local-only | private | blocked
+    superseded_by: str = ""      # wikilink or path of the superseding page
+    expires: str = ""            # ISO date string
     raw: Dict[str, str] = field(default_factory=dict)
+
+    # PR-2: Valid values for validation
+    VALID_STATUSES = frozenset({"draft", "candidate", "accepted", "superseded", "rejected", "expired"})
+    VALID_PRIVACIES = frozenset({"safe", "local-only", "private", "blocked"})
+    VALID_TYPES = frozenset({"entity", "concept", "decision", "procedure", "session", "artifact", "handoff", "synthesis", "unknown"})
 
 
 @dataclass
@@ -108,7 +117,9 @@ class WikiPageParser:
         Simple YAML frontmatter parser.
 
         Doesn't require PyYAML — handles the structured frontmatter format
-        used by the LLM Wiki skill (title, type, tags, sources, etc.)
+        used by the LLM Wiki skill (title, type, tags, sources, status, privacy, etc.)
+
+        PR-2: Also parses status, privacy, superseded_by, expires fields.
         """
         fm = WikiFrontmatter()
         fm.raw = {}
@@ -137,8 +148,33 @@ class WikiPageParser:
                 fm.tags = self._parse_list_field(value)
             elif key == 'sources':
                 fm.sources = self._parse_list_field(value)
+            elif key == 'status':
+                fm.status = value.lower() if value else "candidate"
+            elif key == 'privacy':
+                fm.privacy = value.lower() if value else "safe"
+            elif key == 'superseded_by':
+                fm.superseded_by = value
+            elif key == 'expires':
+                fm.expires = value
 
         return fm
+
+    def validate_frontmatter(self, fm: WikiFrontmatter, path: str) -> List[str]:
+        """
+        Validate frontmatter fields.
+
+        Returns a list of error strings. Empty list = valid.
+        """
+        errors = []
+        if fm.status not in WikiFrontmatter.VALID_STATUSES:
+            errors.append(
+                f"invalid status={fm.status!r} (must be one of {sorted(WikiFrontmatter.VALID_STATUSES)})"
+            )
+        if fm.privacy not in WikiFrontmatter.VALID_PRIVACIES:
+            errors.append(
+                f"invalid privacy={fm.privacy!r} (must be one of {sorted(WikiFrontmatter.VALID_PRIVACIES)})"
+            )
+        return errors
 
     @staticmethod
     def _parse_list_field(value: str) -> List[str]:
@@ -223,8 +259,11 @@ class WikiIndexer:
 
         stats = {
             "indexed": 0, "skipped": 0, "deleted": 0,
-            "chunks": 0, "wikilinks": 0, "errors": 0
+            "chunks": 0, "wikilinks": 0, "errors": 0, "rejected": 0
         }
+
+        # Resolve log.md path for rejected page logging
+        log_path = os.path.join(wiki_path, "log.md")
 
         with self.db.transaction() as c:
             # Phase 1: Index new/changed wiki pages (content + chunks, no wikilinks)
@@ -253,27 +292,66 @@ class WikiIndexer:
                         stats["errors"] += 1
                         continue
 
+                    # PR-2: Validate frontmatter (reject invalid pages)
+                    if not is_meta:
+                        errors = self.parser.validate_frontmatter(page.frontmatter, path)
+                        if errors:
+                            err_msg = "; ".join(errors)
+                            logger.warning(
+                                "Rejecting wiki page %s: %s", os.path.basename(path), err_msg
+                            )
+                            # Log to wiki log.md (best-effort)
+                            try:
+                                with open(log_path, "a", encoding="utf-8") as lf:
+                                    lf.write(
+                                        f"\n## [{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                                        f"REJECTED {os.path.basename(path)}\n"
+                                        f"Reason: {err_msg}\n"
+                                    )
+                            except Exception:
+                                pass
+                            stats["rejected"] += 1
+                            stats["errors"] += 1
+                            continue
+
+                    # PR-2: Skip pages with privacy: blocked
+                    if not is_meta and page.frontmatter.privacy == "blocked":
+                        logger.info(
+                            "Skipping blocked page: %s", os.path.basename(path)
+                        )
+                        stats["skipped"] += 1
+                        continue
+
                     now = time.time()
 
                     # Agent tag: 'wiki' for provenance, plus page type
                     agent_tag = f"wiki:{page.frontmatter.page_type}" if not is_meta else "wiki:meta"
 
+                    # PR-2: page_status and privacy_level from frontmatter
+                    page_status = page.frontmatter.status if not is_meta else "accepted"
+                    privacy_level = page.frontmatter.privacy if not is_meta else "safe"
+                    page_type = page.frontmatter.page_type if not is_meta else None
+
                     if row:
                         doc_id = row["doc_id"]
                         c.execute(
                             """UPDATE documents
-                               SET agent=?, sigil=?, last_modified=?, indexed_at=?
+                               SET agent=?, sigil=?, last_modified=?, indexed_at=?,
+                                   page_status=?, privacy_level=?, page_type=?
                                WHERE doc_id=?""",
-                            (agent_tag, "📖", mtime, now, doc_id),
+                            (agent_tag, "📖", mtime, now,
+                             page_status, privacy_level, page_type, doc_id),
                         )
                         # Clean old FTS + embeddings for re-index
                         c.execute("DELETE FROM vault_fts WHERE doc_id = ?", (doc_id,))
                         c.execute("DELETE FROM chunk_embeddings WHERE doc_id = ?", (doc_id,))
                     else:
                         c.execute(
-                            """INSERT INTO documents (path, agent, sigil, last_modified, indexed_at)
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (path, agent_tag, "📖", mtime, now),
+                            """INSERT INTO documents (path, agent, sigil, last_modified, indexed_at,
+                                   page_status, privacy_level, page_type)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (path, agent_tag, "📖", mtime, now,
+                             page_status, privacy_level, page_type),
                         )
                         doc_id = c.lastrowid
 

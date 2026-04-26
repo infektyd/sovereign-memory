@@ -31,14 +31,19 @@ class TestMigrationsRunner:
         return str(tmp_path / "test.db")
 
     def test_run_migrations_sets_user_version_to_1(self, tmp_path):
-        """After running migrations on a blank DB, user_version == 1."""
+        """After running migrations on a blank DB, user_version >= 1.
+
+        PR-1 originally set this to 1. PR-2 adds migration 002, so the
+        current max version is 2. This test checks >= 1 to remain stable
+        as new migrations are added.
+        """
         from migrations import run_migrations
         db_path = self._fresh_db(tmp_path)
         conn = sqlite3.connect(db_path)
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 1
+        assert version >= 1, f"Expected user_version >= 1, got {version}"
 
     def test_migrations_idempotent(self, tmp_path):
         """Running migrations twice does not change user_version or raise."""
@@ -46,13 +51,15 @@ class TestMigrationsRunner:
         db_path = self._fresh_db(tmp_path)
         conn = sqlite3.connect(db_path)
         run_migrations(conn)
+        version_after_first = conn.execute("PRAGMA user_version").fetchone()[0]
         run_migrations(conn)  # second call must be a no-op
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 1
+        assert version == version_after_first, "Second run must not change user_version"
+        assert version >= 1
 
     def test_existing_db_gets_user_version_1(self, tmp_path):
-        """An existing DB (user_version=0) should be bumped to 1 with no changes."""
+        """An existing DB (user_version=0) should be bumped >= 1 by migrations."""
         from migrations import run_migrations
         db_path = self._fresh_db(tmp_path)
         # Simulate existing DB: create it with no user_version set
@@ -63,10 +70,10 @@ class TestMigrationsRunner:
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 1
+        assert version >= 1, f"Expected user_version >= 1, got {version}"
 
     def test_connect_sets_user_version(self, tmp_path):
-        """db.connect() on fresh path yields user_version=1."""
+        """db.connect() on fresh path yields user_version >= 1."""
         db_path = self._fresh_db(tmp_path)
 
         # Reset module-level flag before test (it may have been set by other tests)
@@ -86,7 +93,7 @@ class TestMigrationsRunner:
             conn = sqlite3.connect(db_path)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             conn.close()
-            assert version == 1
+            assert version >= 1, f"Expected user_version >= 1, got {version}"
         finally:
             db_mod._migrations_run = old_flag
             os.environ.pop("SOVEREIGN_DB_PATH", None)

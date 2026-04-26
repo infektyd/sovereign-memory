@@ -14,6 +14,7 @@ V3.1 uses a proper FAISS index with auto-scaling:
 
 import os
 import logging
+import sqlite3
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -254,3 +255,95 @@ class FAISSIndex:
             "hnsw_threshold": self.config.hnsw_threshold,
             "memory_bytes": self.count * self.dim * 4,  # float32
         }
+
+    # ── Disk persistence (PR-2) ───────────────────────────────────────────────
+
+    def _manifest_path(self) -> str:
+        """Default manifest path: <db_dir>/faiss/index.manifest.json."""
+        from faiss_persist import _faiss_dir_for_db
+        faiss_dir = _faiss_dir_for_db(self.config.db_path)
+        return os.path.join(faiss_dir, "index.manifest.json")
+
+    def try_load_from_disk(self, db_conn=None) -> bool:
+        """
+        Attempt to load the FAISS index from disk cache.
+
+        Returns True if the cache was valid and loaded, False on miss.
+        Call this before building from DB on cold start.
+        """
+        from faiss_persist import compute_db_checksum, load
+
+        manifest = self._manifest_path()
+
+        # Compute current DB checksum (requires a live connection)
+        if db_conn is None:
+            logger.debug("No DB connection for checksum; skipping disk load")
+            return False
+
+        checksum = compute_db_checksum(db_conn)
+        result = load(
+            manifest,
+            expected_db_checksum=checksum,
+            expected_model=self.config.embedding_model,
+            expected_dim=self.config.embedding_dim,
+        )
+        if result is None:
+            return False
+
+        faiss_index, chunk_ids, vectors = result
+
+        if faiss_index is not None:
+            # Restore from FAISS index: rebuild id maps from chunk_id_order
+            self._index = faiss_index
+            self._chunk_ids = list(chunk_ids)
+            self._id_map = {i: cid for i, cid in enumerate(chunk_ids)}
+            self._reverse_map = {cid: i for i, cid in enumerate(chunk_ids)}
+            # We do not have raw vectors; set to empty (rebuild will re-load if needed)
+            self._vectors = []
+            self._current_type = "flat" if not hasattr(faiss_index, "hnsw") else "hnsw"
+            logger.info(
+                "FAISS index restored from disk cache: %d vectors", len(chunk_ids)
+            )
+            return True
+
+        if vectors:
+            # numpy fallback: have raw vectors, rebuild index from them
+            arr = np.array(vectors, dtype=np.float32)
+            self.build_from_vectors(list(chunk_ids), arr)
+            logger.info(
+                "FAISS index rebuilt from numpy cache: %d vectors", len(chunk_ids)
+            )
+            return True
+
+        return False
+
+    def save_to_disk(self, db_conn=None) -> bool:
+        """
+        Save the current index to disk.
+
+        Args:
+            db_conn: An open sqlite3.Connection for computing the DB checksum.
+
+        Returns:
+            True on success, False if save is skipped or fails.
+        """
+        if self.count == 0:
+            logger.debug("Skipping FAISS save: index is empty")
+            return False
+
+        from faiss_persist import compute_db_checksum, save
+
+        checksum = "unknown"
+        if db_conn is not None:
+            checksum = compute_db_checksum(db_conn)
+
+        manifest = self._manifest_path()
+        return save(
+            index=self._index,
+            vectors=self._vectors,
+            chunk_ids=self._chunk_ids,
+            manifest_path=manifest,
+            embedding_model=self.config.embedding_model,
+            vector_dim=self.config.embedding_dim,
+            db_checksum=checksum,
+        )

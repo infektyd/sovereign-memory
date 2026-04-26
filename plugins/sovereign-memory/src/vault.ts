@@ -7,7 +7,10 @@ export type VaultSection =
   | "concepts"
   | "decisions"
   | "syntheses"
-  | "sessions";
+  | "sessions"
+  | "procedures"
+  | "artifacts"
+  | "handoffs";
 
 export interface EnsureVaultResult {
   vaultPath: string;
@@ -21,12 +24,42 @@ export interface AuditEntry {
   timestamp?: Date;
 }
 
+// PR-2: Status lifecycle for vault pages
+export type PageStatus =
+  | "draft"
+  | "candidate"
+  | "accepted"
+  | "superseded"
+  | "rejected"
+  | "expired";
+
+// PR-2: Privacy levels for vault pages
+export type PrivacyLevel = "safe" | "local-only" | "private" | "blocked";
+
+// PR-2: Page types (must match docs/contracts/PAGE_TYPES.md)
+export type PageType =
+  | "entity"
+  | "concept"
+  | "decision"
+  | "procedure"
+  | "session"
+  | "artifact"
+  | "handoff"
+  | "synthesis";
+
 export interface WriteVaultPageInput {
   vaultPath: string;
   title: string;
   content: string;
   section: VaultSection;
   source?: string;
+  // PR-2: structured frontmatter fields
+  type?: PageType;
+  status?: PageStatus;
+  privacy?: PrivacyLevel;
+  sources?: string[];
+  expires?: string;
+  supersededBy?: string;
   frontmatter?: Record<string, string | number | boolean | undefined>;
 }
 
@@ -75,6 +108,9 @@ const VAULT_DIRS = [
   "wiki/decisions",
   "wiki/syntheses",
   "wiki/sessions",
+  "wiki/procedures",
+  "wiki/artifacts",
+  "wiki/handoffs",
   "schema",
   "logs",
   "inbox",
@@ -128,6 +164,19 @@ function sectionPath(section: VaultSection, title: string): string {
   if (section === "raw") return path.join("raw", `${compactDate()}-${slug}.md`);
   if (section === "sessions") return path.join("wiki", "sessions", `${compactDate()}-${slug}.md`);
   return path.join("wiki", section, `${slug}.md`);
+}
+
+// PR-2: Infer page type from section
+function inferPageType(section: VaultSection, explicit?: PageType): PageType | undefined {
+  if (explicit) return explicit;
+  const sectionTypeMap: Partial<Record<VaultSection, PageType>> = {
+    entities: "entity",
+    concepts: "concept",
+    decisions: "decision",
+    syntheses: "synthesis",
+    sessions: "session",
+  };
+  return sectionTypeMap[section];
 }
 
 function wikilinkFor(relativePath: string): string {
@@ -315,12 +364,28 @@ export async function writeVaultPage(input: WriteVaultPageInput): Promise<VaultW
   const notePath = path.join(input.vaultPath, relativePath);
   await mkdir(path.dirname(notePath), { recursive: true });
 
+  // PR-2: Build structured frontmatter with lifecycle fields
+  const pageType = inferPageType(input.section, input.type);
+  const pageStatus: PageStatus = input.status ?? "candidate";
+  const privacyLevel: PrivacyLevel = input.privacy ?? "safe";
+
+  const sourcesStr =
+    input.sources && input.sources.length > 0
+      ? `[${input.sources.join(", ")}]`
+      : undefined;
+
   const fm = frontmatter({
     title: input.title,
+    type: pageType,
+    status: pageStatus,
+    privacy: privacyLevel,
     source: input.source,
+    sources: sourcesStr,
     created: new Date().toISOString(),
     section: input.section,
     immutable: input.section === "raw" ? true : undefined,
+    superseded_by: input.supersededBy,
+    expires: input.expires,
     ...input.frontmatter,
   });
   const body = `${fm}\n# ${input.title}\n\n${input.content.trim()}\n`;

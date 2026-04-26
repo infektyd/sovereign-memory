@@ -35,6 +35,84 @@ DepthTier = Literal["headline", "snippet", "chunk", "document"]
 _VALID_DEPTHS = {"headline", "snippet", "chunk", "document"}
 _SNIPPET_MAX_CHARS = 280
 
+# Page type → source authority mapping
+_TYPE_TO_AUTHORITY = {
+    "schema": "schema",
+    "handoff": "handoff",
+    "decision": "decision",
+    "session": "session",
+    "concept": "concept",
+    "procedure": "procedure",
+    "artifact": "artifact",
+    "entity": "vault",
+    "synthesis": "concept",
+}
+
+
+def _page_type_to_authority(page_type: Optional[str], agent: str) -> Optional[str]:
+    """Map a page_type string to a source_authority value."""
+    if page_type:
+        return _TYPE_TO_AUTHORITY.get(page_type.lower(), "vault")
+    if agent.startswith("wiki:"):
+        sub = agent[5:]
+        return _TYPE_TO_AUTHORITY.get(sub, "vault")
+    if agent.startswith("identity:"):
+        return "schema"
+    return "vault"
+
+
+def _path_to_wikilink(path: str) -> Optional[str]:
+    """Convert an absolute path to a [[wikilink]] style reference."""
+    if not path:
+        return None
+    import os
+    # Strip extension and produce a relative-ish wiki link
+    name = os.path.splitext(os.path.basename(path))[0]
+    # Try to extract a wiki-relative path
+    for marker in ("/wiki/", "/raw/", "/schema/"):
+        idx = path.find(marker)
+        if idx >= 0:
+            rel = path[idx + 1:]  # e.g. wiki/concepts/foo
+            rel_noext = os.path.splitext(rel)[0]
+            return f"[[{rel_noext}]]"
+    return f"[[{name}]]"
+
+
+def _parse_evidence_refs(raw) -> Optional[list]:
+    """Parse evidence_refs field (stored as JSON string or None)."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    import json
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+    # Try comma-split as fallback
+    if isinstance(raw, str) and raw.strip():
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return None
+
+
+def _recommended_action(
+    status: Optional[str],
+    instruction_like: Optional[bool],
+    confidence: Optional[float],
+) -> str:
+    """Heuristic recommended action for the consuming agent."""
+    if instruction_like:
+        return "escalate"
+    if status in ("superseded", "rejected", "expired"):
+        return "ignore"
+    if status == "draft":
+        return "follow_up"
+    if confidence is not None and confidence < 0.2:
+        return "follow_up"
+    return "cite"
+
 
 class RetrievalEngine:
     """Hybrid FTS5 + FAISS semantic retrieval with cross-encoder re-ranking."""
@@ -95,7 +173,9 @@ class RetrievalEngine:
         with self.db.cursor() as c:
             c.execute("""
                 SELECT f.doc_id, d.path, d.agent, d.sigil,
-                       rank AS bm25_rank, d.decay_score
+                       rank AS bm25_rank, d.decay_score,
+                       d.page_status, d.privacy_level, d.page_type,
+                       d.evidence_refs, d.indexed_at
                 FROM vault_fts f
                 JOIN documents d ON d.doc_id = f.doc_id
                 WHERE vault_fts MATCH ?
@@ -111,6 +191,11 @@ class RetrievalEngine:
                     "sigil": row["sigil"],
                     "bm25_rank": row["bm25_rank"],
                     "decay_score": row["decay_score"] or 1.0,
+                    "page_status": row["page_status"] or "candidate",
+                    "privacy_level": row["privacy_level"] or "safe",
+                    "page_type": row["page_type"],
+                    "evidence_refs": row["evidence_refs"],
+                    "indexed_at": row["indexed_at"],
                 })
 
         return results
@@ -160,7 +245,9 @@ class RetrievalEngine:
             placeholders = ",".join("?" * len(chunk_ids))
             c.execute(f"""
                 SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
-                       d.path, d.agent, d.sigil, d.decay_score
+                       d.path, d.agent, d.sigil, d.decay_score,
+                       d.page_status, d.privacy_level, d.page_type,
+                       d.evidence_refs, d.indexed_at
                 FROM chunk_embeddings ce
                 JOIN documents d ON d.doc_id = ce.doc_id
                 WHERE ce.chunk_id IN ({placeholders})
@@ -182,16 +269,35 @@ class RetrievalEngine:
                         "chunk_text": row["chunk_text"],
                         "heading_context": row["heading_context"] or "",
                         "decay_score": row["decay_score"] or 1.0,
+                        "page_status": row["page_status"] or "candidate",
+                        "privacy_level": row["privacy_level"] or "safe",
+                        "page_type": row["page_type"],
+                        "evidence_refs": row["evidence_refs"],
+                        "indexed_at": row["indexed_at"],
                     }
 
         results = sorted(doc_best.values(), key=lambda x: x["similarity"], reverse=True)
         return results[:limit * 3]
 
     def _ensure_faiss_loaded(self) -> None:
-        """Load FAISS index from DB if not already loaded."""
+        """
+        Load FAISS index from DB if not already loaded.
+
+        PR-2: Attempt disk cache first (cold-start <500ms).
+        On miss, rebuild from DB then save to disk.
+        """
         if self.faiss_index.count > 0:
             return
 
+        # PR-2: Try disk cache first
+        try:
+            conn = self.db._get_conn()
+            if self.faiss_index.try_load_from_disk(db_conn=conn):
+                return
+        except Exception as e:
+            logger.debug("Disk cache load failed (non-fatal): %s", e)
+
+        # Rebuild from DB
         chunk_ids = []
         embeddings = []
 
@@ -207,6 +313,13 @@ class RetrievalEngine:
             all_vecs = np.array(embeddings, dtype=np.float32)
             self.faiss_index.build_from_vectors(chunk_ids, all_vecs)
             logger.info("FAISS index loaded from DB: %d vectors", len(chunk_ids))
+
+            # PR-2: Save to disk for next cold start
+            try:
+                conn = self.db._get_conn()
+                self.faiss_index.save_to_disk(db_conn=conn)
+            except Exception as e:
+                logger.debug("FAISS disk save failed (non-fatal): %s", e)
 
     # ── Cross-Encoder Re-Ranking ──────────────────────────────
 
@@ -273,6 +386,11 @@ class RetrievalEngine:
                     "sem_rank": None,
                     "chunk_text": r.get("chunk_text", ""),
                     "heading_context": r.get("heading_context", ""),
+                    "page_status": r.get("page_status", "candidate"),
+                    "privacy_level": r.get("privacy_level", "safe"),
+                    "page_type": r.get("page_type"),
+                    "evidence_refs": r.get("evidence_refs"),
+                    "indexed_at": r.get("indexed_at"),
                 }
             doc_scores[did]["rrf_score"] += self.config.fts_weight / (k + rank)
 
@@ -290,6 +408,11 @@ class RetrievalEngine:
                     "sem_rank": rank,
                     "chunk_text": r.get("chunk_text", ""),
                     "heading_context": r.get("heading_context", ""),
+                    "page_status": r.get("page_status", "candidate"),
+                    "privacy_level": r.get("privacy_level", "safe"),
+                    "page_type": r.get("page_type"),
+                    "evidence_refs": r.get("evidence_refs"),
+                    "indexed_at": r.get("indexed_at"),
                 }
             doc_scores[did]["rrf_score"] += self.config.semantic_weight / (k + rank)
             if doc_scores[did]["sem_rank"] is None:
@@ -298,6 +421,13 @@ class RetrievalEngine:
             if r.get("chunk_text") and not doc_scores[did].get("chunk_text"):
                 doc_scores[did]["chunk_text"] = r["chunk_text"]
                 doc_scores[did]["heading_context"] = r.get("heading_context", "")
+            # Carry forward page metadata from semantic if FTS didn't provide it
+            if not doc_scores[did].get("page_type") and r.get("page_type"):
+                doc_scores[did]["page_type"] = r["page_type"]
+            if not doc_scores[did].get("evidence_refs") and r.get("evidence_refs"):
+                doc_scores[did]["evidence_refs"] = r["evidence_refs"]
+            if not doc_scores[did].get("indexed_at") and r.get("indexed_at"):
+                doc_scores[did]["indexed_at"] = r["indexed_at"]
 
         for d in doc_scores.values():
             d["final_score"] = d["rrf_score"] * d["decay_score"]
@@ -350,17 +480,38 @@ class RetrievalEngine:
         if depth not in _VALID_DEPTHS:
             depth = "snippet"
 
+        # Helper: add all PR-2 envelope fields (additive — present in all tiers)
+        # Does NOT override provenance if already built by the caller.
+        def _pr2_fields(result: Dict, existing: Optional[Dict] = None) -> Dict:
+            fields = {
+                "confidence": result.get("confidence"),
+                "rationale": result.get("rationale"),
+                "privacy_level": result.get("privacy_level"),
+                "source_authority": result.get("source_authority"),
+                "review_state": result.get("review_state"),
+                "instruction_like": result.get("instruction_like"),
+                "wikilink": result.get("wikilink"),
+                "evidence_refs": result.get("evidence_refs"),
+                "recommended_action": result.get("recommended_action"),
+                "recommended_wiki_updates": result.get("recommended_wiki_updates") or [],
+            }
+            # Only include provenance if not already in existing dict
+            if existing is None or "provenance" not in existing:
+                fields["provenance"] = result.get("provenance")
+            return fields
+
         if depth == "headline":
-            return {
+            out = {
                 "source": result.get("source", ""),
                 "filename": result.get("filename", ""),
                 "score": result.get("score", 0),
                 "doc_id": result.get("doc_id"),
-                # confidence and age_days will be populated in PR-2; carry nulls now
                 "confidence": result.get("confidence"),
                 "age_days": result.get("age_days"),
                 "depth": "headline",
             }
+            out.update(_pr2_fields(result, out))
+            return out
 
         if depth == "snippet":
             text = result.get("chunk_text", "")
@@ -378,9 +529,21 @@ class RetrievalEngine:
             # Keep token_count if already computed
             if "token_count" in result:
                 out["token_count"] = result["token_count"]
+            out.update(_pr2_fields(result, out))
             return out
 
         if depth in ("chunk", "document"):
+            built_prov = result.get("provenance") or {
+                "fts_rank": result.get("fts_rank"),
+                "semantic_rank": result.get("sem_rank"),
+                "rrf_score": result.get("rrf_score"),
+                "cross_encoder_score": result.get("rerank_score"),
+                "decay_factor": result.get("decay_score"),
+                "doc_id": result.get("doc_id"),
+                "chunk_id": result.get("chunk_id"),
+                "agent_origin": result.get("agent", ""),
+                "backend": "faiss-disk",
+            }
             out = {
                 "text": result.get("chunk_text", ""),
                 "source": result.get("source", ""),
@@ -393,21 +556,12 @@ class RetrievalEngine:
                 "sigil": result.get("sigil", ""),
                 "fts_rank": result.get("fts_rank"),
                 "sem_rank": result.get("sem_rank"),
-                "provenance": {
-                    "fts_rank": result.get("fts_rank"),
-                    "semantic_rank": result.get("sem_rank"),
-                    "rrf_score": result.get("rrf_score"),
-                    "cross_encoder_score": result.get("rerank_score"),
-                    "decay_factor": result.get("decay_score"),
-                    "doc_id": result.get("doc_id"),
-                    "chunk_id": result.get("chunk_id"),
-                    "agent_origin": result.get("agent", ""),
-                    "backend": "faiss-disk",
-                },
+                "provenance": built_prov,
                 "depth": depth,
             }
             if "token_count" in result:
                 out["token_count"] = result["token_count"]
+            out.update(_pr2_fields(result, out))
             # document tier: add full_document_text if available in result
             if depth == "document" and "full_document_text" in result:
                 out["full_document_text"] = result["full_document_text"]
@@ -439,6 +593,9 @@ class RetrievalEngine:
         update_access: bool = True,
         budget_tokens: bool = True,
         depth: str = "snippet",
+        include_superseded: bool = False,
+        include_rejected: bool = False,
+        include_drafts: bool = False,
     ) -> List[Dict]:
         """
         Hybrid retrieval: FTS5 + FAISS semantic, RRF fusion, cross-encoder re-rank,
@@ -487,6 +644,31 @@ class RetrievalEngine:
         if agent_id:
             merged = [r for r in merged if r["agent"] == agent_id or r["agent"] == "unknown"]
 
+        # PR-2: Status lifecycle filtering
+        # default: skip superseded, rejected, draft, expired
+        # callers can opt back in with include_* kwargs
+        _ALWAYS_EXCLUDED = {"blocked"}  # privacy_level=blocked is always excluded
+        _SKIP_STATUSES = set()
+        if not include_superseded:
+            _SKIP_STATUSES.add("superseded")
+        if not include_rejected:
+            _SKIP_STATUSES.add("rejected")
+        if not include_drafts:
+            _SKIP_STATUSES.add("draft")
+            _SKIP_STATUSES.add("expired")
+
+        if _SKIP_STATUSES or _ALWAYS_EXCLUDED:
+            filtered = []
+            for r in merged:
+                status = r.get("page_status") or "candidate"
+                privacy = r.get("privacy_level") or "safe"
+                if status in _SKIP_STATUSES:
+                    continue
+                if privacy in _ALWAYS_EXCLUDED:
+                    continue
+                filtered.append(r)
+            merged = filtered
+
         # Step 5: Context budgeting
         if budget_tokens:
             merged = self._budget_results(merged, query)
@@ -498,17 +680,76 @@ class RetrievalEngine:
 
         # Format output and update access counts
         import os
+        from safety import is_instruction_like
+        from scoring import compute_confidence
+        from rationale import explain
+
         results = []
         for r in merged:
             # Build a rich intermediate dict with all raw fields available.
             # _apply_depth will project it down to the requested tier.
             score = round(r.get("rerank_score", r.get("final_score", 0)), 4)
+
+            # Compute age_days from indexed_at
+            indexed_at = r.get("indexed_at")
+            age_days: Optional[float] = None
+            if indexed_at:
+                age_days = round((time.time() - float(indexed_at)) / 86400.0, 1)
+
+            # Compute confidence
+            try:
+                confidence = compute_confidence(
+                    rrf_score=r.get("rrf_score"),
+                    cross_encoder_score=r.get("rerank_score"),
+                    decay_factor=r.get("decay_score"),
+                    db=self.db,
+                )
+            except Exception:
+                confidence = None
+
+            # Detect injection in chunk text
+            chunk_text = r.get("chunk_text", "")
+            try:
+                instr_like = is_instruction_like(chunk_text)
+            except Exception:
+                instr_like = None
+
+            # Infer page type → source_authority mapping
+            page_type = r.get("page_type")
+            source_authority = _page_type_to_authority(page_type, r.get("agent", ""))
+
+            # Wikilink from path
+            path = r.get("path", "")
+            rel_path = path  # full path; callers can relativize if needed
+            wikilink = _path_to_wikilink(path)
+
+            # Evidence refs (stored as JSON list or comma string)
+            evidence_refs = _parse_evidence_refs(r.get("evidence_refs"))
+
+            # Page status for envelope
+            page_status = r.get("page_status") or "candidate"
+            privacy_level = r.get("privacy_level") or "safe"
+
+            # Build provenance dict
+            provenance = {
+                "fts_rank": r.get("fts_rank"),
+                "semantic_rank": r.get("sem_rank"),
+                "rrf_score": r.get("rrf_score"),
+                "cross_encoder_score": r.get("rerank_score"),
+                "decay_factor": r.get("decay_score"),
+                "agent_origin": r.get("agent", ""),
+                "age_days": age_days,
+                "doc_id": r["doc_id"],
+                "chunk_id": r.get("chunk_id"),
+                "backend": "faiss-disk",
+            }
+
             raw = {
                 "doc_id": r["doc_id"],
                 "chunk_id": r.get("chunk_id"),
-                "path": r["path"],
+                "path": path,
                 "source": r.get("path", ""),
-                "filename": os.path.basename(r["path"]),
+                "filename": os.path.basename(path),
                 "agent": r["agent"],
                 "sigil": r["sigil"],
                 "score": score,
@@ -517,13 +758,28 @@ class RetrievalEngine:
                 "rrf_score": r.get("rrf_score"),
                 "rerank_score": r.get("rerank_score"),
                 "decay_score": r.get("decay_score"),
-                "chunk_text": r.get("chunk_text", ""),
+                "chunk_text": chunk_text,
                 "heading_context": r.get("heading_context", ""),
                 "token_count": r.get("token_count", 0),
-                # Phase 1.2 fields: not yet computed; carry as null for graceful upgrade
-                "confidence": None,
-                "age_days": None,
+                # PR-2 envelope fields
+                "confidence": confidence,
+                "age_days": age_days,
+                "provenance": provenance,
+                "privacy_level": privacy_level,
+                "source_authority": source_authority,
+                "review_state": page_status,
+                "instruction_like": instr_like,
+                "wikilink": wikilink,
+                "evidence_refs": evidence_refs,
+                "recommended_action": _recommended_action(page_status, instr_like, confidence),
+                "recommended_wiki_updates": [],
             }
+
+            # Rationale is computed after provenance is assembled
+            try:
+                raw["rationale"] = explain(raw)
+            except Exception:
+                raw["rationale"] = None
 
             # For document depth, attach full document text if available
             if depth == "document":
