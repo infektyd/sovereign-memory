@@ -78,11 +78,34 @@ def _ensure_tracking_table(conn: sqlite3.Connection) -> None:
     import time as _time
     now = int(_time.time())
     for version, filepath in _load_migration_files():
-        if version <= current_version:
+        if version <= current_version and _migration_present_in_schema(conn, version):
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
                 (version, os.path.basename(filepath), now),
             )
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        return column in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return False
+
+
+def _migration_present_in_schema(conn: sqlite3.Connection, version: int) -> bool:
+    """
+    Decide whether a user_version back-fill can safely mark a migration applied.
+
+    PR-5 can be introduced after PR-6 has already bumped user_version to 5.
+    In that case user_version alone is not evidence that 004's additive layer
+    columns exist, so leave it pending unless the columns are actually present.
+    """
+    if version == 4:
+        return (
+            _column_exists(conn, "documents", "layer")
+            and _column_exists(conn, "chunk_embeddings", "layer")
+        )
+    return True
 
 
 def run_migrations(conn: sqlite3.Connection) -> None:
@@ -176,13 +199,15 @@ def _execute_tolerant(conn: sqlite3.Connection, statement: str) -> None:
         if "duplicate column" in msg or "already exists" in msg:
             # Idempotent: column or table already present — safe to skip
             logger.debug("Ignoring idempotent DDL error: %s", e)
-        elif "no such table" in msg and (
+        elif ("no such table" in msg or "no such column" in msg) and (
             statement.strip().upper().startswith("ALTER")
             or statement.strip().upper().startswith("CREATE INDEX")
+            or statement.strip().upper().startswith("UPDATE")
         ):
-            # DDL against a missing table: the table will be created by
-            # _init_schema on the next full DB initialization. Skip gracefully.
-            logger.debug("Ignoring ALTER on missing table (will be created by _init_schema): %s", e)
+            # Additive migration against a partial test/legacy schema: the
+            # base schema initializer or a later full migration will supply
+            # the missing surface. Skip gracefully.
+            logger.debug("Ignoring additive migration on partial schema: %s", e)
         else:
             raise
 

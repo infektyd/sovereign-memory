@@ -226,6 +226,10 @@ def _handle_search(params: dict, request_id: Any) -> dict:
     depth = str(params.get("depth", "snippet"))
     budget_tokens_param = params.get("budget_tokens")
     backend_param = params.get("backend", "auto")
+    layers = params.get("layers")
+    sort = str(params.get("sort", "semantic"))
+    start_date = params.get("start_date")
+    end_date = params.get("end_date")
 
     # depth="auto" means "pick snippet and apply MMR budget packing"
     if depth == "auto":
@@ -242,6 +246,10 @@ def _handle_search(params: dict, request_id: Any) -> dict:
             limit=limit,
             depth=depth,
             backend=_resolved_backend,
+            layers=layers,
+            sort=sort,
+            start_date=start_date,
+            end_date=end_date,
         )
 
         # Apply MMR token-budget packing if requested

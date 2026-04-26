@@ -20,7 +20,7 @@ PR-1b adds progressive disclosure depth tiers to retrieve():
 import time
 import math
 import logging
-from typing import List, Dict, Literal, Optional
+from typing import List, Dict, Literal, Optional, Sequence
 
 import numpy as np
 
@@ -139,8 +139,11 @@ class RetrievalEngine:
     @property
     def reranker(self):
         """Return the process-wide cross-encoder singleton."""
+        if self._reranker is not None:
+            return self._reranker
         from models import get_cross_encoder
-        return get_cross_encoder()
+        self._reranker = get_cross_encoder()
+        return self._reranker
 
     @property
     def tokenizer(self):
@@ -175,7 +178,7 @@ class RetrievalEngine:
                 SELECT f.doc_id, d.path, d.agent, d.sigil,
                        rank AS bm25_rank, d.decay_score,
                        d.page_status, d.privacy_level, d.page_type,
-                       d.evidence_refs, d.indexed_at
+                       d.evidence_refs, d.indexed_at, d.layer
                 FROM vault_fts f
                 JOIN documents d ON d.doc_id = f.doc_id
                 WHERE vault_fts MATCH ?
@@ -196,6 +199,7 @@ class RetrievalEngine:
                     "page_type": row["page_type"],
                     "evidence_refs": row["evidence_refs"],
                     "indexed_at": row["indexed_at"],
+                    "layer": row["layer"] or "knowledge",
                 })
 
         return results
@@ -247,7 +251,8 @@ class RetrievalEngine:
                 SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
                        d.path, d.agent, d.sigil, d.decay_score,
                        d.page_status, d.privacy_level, d.page_type,
-                       d.evidence_refs, d.indexed_at
+                       d.evidence_refs, d.indexed_at,
+                       COALESCE(ce.layer, d.layer, 'knowledge') AS layer
                 FROM chunk_embeddings ce
                 JOIN documents d ON d.doc_id = ce.doc_id
                 WHERE ce.chunk_id IN ({placeholders})
@@ -274,6 +279,7 @@ class RetrievalEngine:
                         "page_type": row["page_type"],
                         "evidence_refs": row["evidence_refs"],
                         "indexed_at": row["indexed_at"],
+                        "layer": row["layer"] or "knowledge",
                     }
 
         results = sorted(doc_best.values(), key=lambda x: x["similarity"], reverse=True)
@@ -331,12 +337,46 @@ class RetrievalEngine:
         accurate than bi-encoder similarity, but slower. We use it as a
         second pass on the top candidates from the fast first pass.
         """
-        if not self.reranker or not candidates:
+        reranker = self.reranker
+        if not reranker or not candidates:
+            return candidates
+
+        model_name, model_version = self._reranker_identity(reranker)
+        try:
+            from rerank_cache import GLOBAL_RERANK_CACHE
+            cache = GLOBAL_RERANK_CACHE
+        except Exception:
+            cache = None
+
+        missing = []
+        missing_indexes = []
+        all_scores = [None] * len(candidates)
+        if cache is not None:
+            for i, c in enumerate(candidates):
+                chunk_id = c.get("chunk_id")
+                if chunk_id is None:
+                    missing.append(c)
+                    missing_indexes.append(i)
+                    continue
+                cached = cache.get(model_name, model_version, query, int(chunk_id))
+                if cached is None:
+                    missing.append(c)
+                    missing_indexes.append(i)
+                else:
+                    all_scores[i] = cached
+        else:
+            missing = candidates
+            missing_indexes = list(range(len(candidates)))
+
+        if not missing:
+            for i, c in enumerate(candidates):
+                c["rerank_score"] = float(all_scores[i])
+            candidates.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
             return candidates
 
         # Prepare pairs for the cross-encoder
         pairs = []
-        for c in candidates:
+        for c in missing:
             passage = c.get("chunk_text", "")
             heading = c.get("heading_context", "")
             # Prepend heading context so the re-ranker knows the section
@@ -345,10 +385,17 @@ class RetrievalEngine:
             pairs.append([query, passage])
 
         try:
-            scores = self.reranker.predict(pairs)
+            scores = reranker.predict(pairs)
+
+            for score_index, c, score_value in zip(missing_indexes, missing, scores):
+                score = float(score_value)
+                all_scores[score_index] = score
+                chunk_id = c.get("chunk_id")
+                if cache is not None and chunk_id is not None:
+                    cache.set(model_name, model_version, query, int(chunk_id), score)
 
             for i, c in enumerate(candidates):
-                c["rerank_score"] = float(scores[i])
+                c["rerank_score"] = float(all_scores[i] or 0.0)
 
             # Sort by cross-encoder score
             candidates.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
@@ -356,6 +403,21 @@ class RetrievalEngine:
             logger.warning("Re-ranking failed: %s — falling back to RRF scores", e)
 
         return candidates
+
+    def _reranker_identity(self, reranker) -> tuple[str, str]:
+        model_name = getattr(self.config, "reranker_model", None) or "unknown"
+        for attr in ("model_name", "name"):
+            value = getattr(reranker, attr, None)
+            if value:
+                model_name = str(value)
+                break
+        model_version = "unknown"
+        for attr in ("model_version", "version", "revision"):
+            value = getattr(reranker, attr, None)
+            if value:
+                model_version = str(value)
+                break
+        return model_name, model_version
 
     # ── Reciprocal Rank Fusion ─────────────────────────────────
 
@@ -391,6 +453,7 @@ class RetrievalEngine:
                     "page_type": r.get("page_type"),
                     "evidence_refs": r.get("evidence_refs"),
                     "indexed_at": r.get("indexed_at"),
+                    "layer": r.get("layer", "knowledge"),
                 }
             doc_scores[did]["rrf_score"] += self.config.fts_weight / (k + rank)
 
@@ -413,6 +476,7 @@ class RetrievalEngine:
                     "page_type": r.get("page_type"),
                     "evidence_refs": r.get("evidence_refs"),
                     "indexed_at": r.get("indexed_at"),
+                    "layer": r.get("layer", "knowledge"),
                 }
             doc_scores[did]["rrf_score"] += self.config.semantic_weight / (k + rank)
             if doc_scores[did]["sem_rank"] is None:
@@ -428,6 +492,8 @@ class RetrievalEngine:
                 doc_scores[did]["evidence_refs"] = r["evidence_refs"]
             if not doc_scores[did].get("indexed_at") and r.get("indexed_at"):
                 doc_scores[did]["indexed_at"] = r["indexed_at"]
+            if not doc_scores[did].get("layer") and r.get("layer"):
+                doc_scores[did]["layer"] = r["layer"]
 
         for d in doc_scores.values():
             d["final_score"] = d["rrf_score"] * d["decay_score"]
@@ -508,6 +574,7 @@ class RetrievalEngine:
                 "doc_id": result.get("doc_id"),
                 "confidence": result.get("confidence"),
                 "age_days": result.get("age_days"),
+                "layer": result.get("layer"),
                 "depth": "headline",
             }
             out.update(_pr2_fields(result, out))
@@ -524,6 +591,7 @@ class RetrievalEngine:
                 "heading": result.get("heading_context", ""),
                 "score": result.get("score", 0),
                 "doc_id": result.get("doc_id"),
+                "layer": result.get("layer"),
                 "depth": "snippet",
             }
             # Keep token_count if already computed
@@ -554,6 +622,7 @@ class RetrievalEngine:
                 "chunk_id": result.get("chunk_id"),
                 "agent": result.get("agent", ""),
                 "sigil": result.get("sigil", ""),
+                "layer": result.get("layer"),
                 "fts_rank": result.get("fts_rank"),
                 "sem_rank": result.get("sem_rank"),
                 "provenance": built_prov,
@@ -634,7 +703,8 @@ class RetrievalEngine:
                 SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
                        d.path, d.agent, d.sigil, d.decay_score,
                        d.page_status, d.privacy_level, d.page_type,
-                       d.evidence_refs, d.indexed_at
+                       d.evidence_refs, d.indexed_at,
+                       COALESCE(ce.layer, d.layer, 'knowledge') AS layer
                 FROM chunk_embeddings ce
                 JOIN documents d ON d.doc_id = ce.doc_id
                 WHERE ce.chunk_id IN ({placeholders})
@@ -661,6 +731,7 @@ class RetrievalEngine:
                         "page_type": row["page_type"],
                         "evidence_refs": row["evidence_refs"],
                         "indexed_at": row["indexed_at"],
+                        "layer": row["layer"] or "knowledge",
                         "backend_name": bname,
                     }
 
@@ -695,7 +766,8 @@ class RetrievalEngine:
                 SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
                        d.path, d.agent, d.sigil, d.decay_score,
                        d.page_status, d.privacy_level, d.page_type,
-                       d.evidence_refs, d.indexed_at
+                       d.evidence_refs, d.indexed_at,
+                       COALESCE(ce.layer, d.layer, 'knowledge') AS layer
                 FROM chunk_embeddings ce
                 JOIN documents d ON d.doc_id = ce.doc_id
                 WHERE ce.chunk_id IN ({placeholders})
@@ -722,6 +794,7 @@ class RetrievalEngine:
                         "page_type": row["page_type"],
                         "evidence_refs": row["evidence_refs"],
                         "indexed_at": row["indexed_at"],
+                        "layer": row["layer"] or "knowledge",
                         "backend_name": backend_name,
                     }
 
@@ -764,6 +837,7 @@ class RetrievalEngine:
                         "page_type": r.get("page_type"),
                         "evidence_refs": r.get("evidence_refs"),
                         "indexed_at": r.get("indexed_at"),
+                        "layer": r.get("layer", "knowledge"),
                         "backend_name": r.get("backend_name", "faiss-disk"),
                     }
                 doc_scores[did]["rrf_score"] += weight / (k + rank)
@@ -780,6 +854,8 @@ class RetrievalEngine:
                     doc_scores[did]["evidence_refs"] = r["evidence_refs"]
                 if not doc_scores[did].get("indexed_at") and r.get("indexed_at"):
                     doc_scores[did]["indexed_at"] = r["indexed_at"]
+                if not doc_scores[did].get("layer") and r.get("layer"):
+                    doc_scores[did]["layer"] = r["layer"]
 
         _add_stream(fts_results, self.config.fts_weight, "fts")
         _add_stream(semantic_results, self.config.semantic_weight, "sem")
@@ -791,6 +867,122 @@ class RetrievalEngine:
 
         ranked = sorted(doc_scores.values(), key=lambda x: x["final_score"], reverse=True)
         return ranked[:limit]
+
+    def _normalize_layers(self, layers: Optional[Sequence[str]]) -> Optional[set]:
+        if layers is None:
+            return None
+        valid = {"identity", "episodic", "knowledge", "artifact"}
+        return {str(layer).lower() for layer in layers if str(layer).lower() in valid}
+
+    def _parse_iso_date(self, value: Optional[str], end_of_day: bool = False) -> Optional[float]:
+        if not value:
+            return None
+        from datetime import datetime, time as dt_time
+        text = str(value)
+        try:
+            if len(text) == 10:
+                day = datetime.fromisoformat(text)
+                if end_of_day:
+                    day = datetime.combine(day.date(), dt_time.max)
+                return day.timestamp()
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            logger.warning("Ignoring invalid ISO date filter: %r", value)
+            return None
+
+    def _filter_candidates(
+        self,
+        candidates: List[Dict],
+        layers: Optional[Sequence[str]],
+        start_date: Optional[str],
+        end_date: Optional[str],
+    ) -> List[Dict]:
+        layer_set = self._normalize_layers(layers)
+        start_ts = self._parse_iso_date(start_date)
+        end_ts = self._parse_iso_date(end_date, end_of_day=True)
+        if not layer_set and start_ts is None and end_ts is None:
+            return candidates
+        filtered = []
+        for r in candidates:
+            if layer_set and (r.get("layer") or "knowledge") not in layer_set:
+                continue
+            created_at = r.get("created_at") or r.get("indexed_at") or 0
+            if start_ts is not None and float(created_at or 0) < start_ts:
+                continue
+            if end_ts is not None and float(created_at or 0) > end_ts:
+                continue
+            filtered.append(r)
+        return filtered
+
+    def _chronological_search(
+        self,
+        query: str,
+        limit: int,
+        layers: Optional[Sequence[str]],
+        start_date: Optional[str],
+        end_date: Optional[str],
+    ) -> List[Dict]:
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query:
+            return []
+        layer_set = self._normalize_layers(layers)
+        start_ts = self._parse_iso_date(start_date)
+        end_ts = self._parse_iso_date(end_date, end_of_day=True)
+        params = [safe_query]
+        clauses = ["vault_fts MATCH ?"]
+        if layer_set:
+            placeholders = ",".join("?" * len(layer_set))
+            clauses.append(f"COALESCE(ce.layer, d.layer, 'knowledge') IN ({placeholders})")
+            params.extend(sorted(layer_set))
+        if start_ts is not None:
+            clauses.append("COALESCE(d.indexed_at, d.last_modified, ce.computed_at, 0) >= ?")
+            params.append(start_ts)
+        if end_ts is not None:
+            clauses.append("COALESCE(d.indexed_at, d.last_modified, ce.computed_at, 0) <= ?")
+            params.append(end_ts)
+        params.append(limit)
+
+        with self.db.cursor() as c:
+            c.execute(f"""
+                SELECT ce.chunk_id, ce.doc_id, ce.chunk_text, ce.heading_context,
+                       d.path, d.agent, d.sigil, d.decay_score,
+                       d.page_status, d.privacy_level, d.page_type,
+                       d.evidence_refs, d.indexed_at,
+                       COALESCE(ce.layer, d.layer, 'knowledge') AS layer,
+                       COALESCE(d.indexed_at, d.last_modified, ce.computed_at, 0) AS created_at
+                FROM vault_fts f
+                JOIN documents d ON d.doc_id = f.doc_id
+                JOIN chunk_embeddings ce ON ce.doc_id = d.doc_id
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at ASC, ce.chunk_id ASC
+                LIMIT ?
+            """, params)
+            rows = c.fetchall()
+
+        return [
+            {
+                "doc_id": row["doc_id"],
+                "chunk_id": row["chunk_id"],
+                "path": row["path"],
+                "agent": row["agent"],
+                "sigil": row["sigil"],
+                "final_score": 0.0,
+                "rrf_score": None,
+                "fts_rank": None,
+                "sem_rank": None,
+                "chunk_text": row["chunk_text"],
+                "heading_context": row["heading_context"] or "",
+                "decay_score": row["decay_score"] or 1.0,
+                "page_status": row["page_status"] or "candidate",
+                "privacy_level": row["privacy_level"] or "safe",
+                "page_type": row["page_type"],
+                "evidence_refs": row["evidence_refs"],
+                "indexed_at": row["indexed_at"],
+                "created_at": row["created_at"],
+                "layer": row["layer"] or "knowledge",
+            }
+            for row in rows
+        ]
 
     def retrieve(
         self,
@@ -804,6 +996,10 @@ class RetrievalEngine:
         include_rejected: bool = False,
         include_drafts: bool = False,
         backend=None,
+        layers: Optional[Sequence[str]] = None,
+        sort: Literal["semantic", "chronological"] = "semantic",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> List[Dict]:
         """
         Hybrid retrieval: FTS5 + FAISS semantic, RRF fusion, cross-encoder re-rank,
@@ -837,53 +1033,63 @@ class RetrievalEngine:
         Existing callers that pass no depth receive identical results (snippet).
         With backend=None (default), results are bit-identical to pre-PR-3.
         """
+        if sort not in ("semantic", "chronological"):
+            logger.warning("Unknown sort=%r, falling back to 'semantic'", sort)
+            sort = "semantic"
+
         rerank_k = self.config.reranker_top_k if self.config.reranker_enabled else limit
 
-        # Step 1-2: Dual retrieval
-        fts_results = self._fts_search(query, rerank_k)
+        if sort == "chronological":
+            merged = self._chronological_search(query, rerank_k, layers, start_date, end_date)
+            merged = merged[:limit]
+        else:
+            # Step 1-2: Dual retrieval
+            fts_results = self._fts_search(query, rerank_k)
 
-        # PR-3: When backend is provided, use it instead of (or in addition to)
-        # the internal FAISSIndex.  With backend=None (default), the existing
-        # _semantic_search path is taken — bit-identical to pre-PR-3.
-        extra_backend_results: List[List[Dict]] = []
-        if backend is None:
-            # Default path — bit-identical to pre-PR-3
-            semantic_results = self._semantic_search(query, rerank_k)
-        elif isinstance(backend, list):
-            # Fan-out: build a MultiBackend from the list of backend names/objects
-            from backends.multi import MultiBackend
-            resolved = self._resolve_backends(backend)
-            if len(resolved) == 1:
-                semantic_results = self._backend_search(
-                    self.model.encode(query).astype(np.float32) if self.model else np.array([]),
-                    rerank_k,
-                    resolved[0],
+            # PR-3: When backend is provided, use it instead of (or in addition to)
+            # the internal FAISSIndex.  With backend=None (default), the existing
+            # _semantic_search path is taken — bit-identical to pre-PR-3.
+            extra_backend_results: List[List[Dict]] = []
+            if backend is None:
+                # Default path — bit-identical to pre-PR-3
+                semantic_results = self._semantic_search(query, rerank_k)
+            elif isinstance(backend, list):
+                # Fan-out: build a MultiBackend from the list of backend names/objects
+                from backends.multi import MultiBackend
+                resolved = self._resolve_backends(backend)
+                if len(resolved) == 1:
+                    semantic_results = self._backend_search(
+                        self.model.encode(query).astype(np.float32) if self.model else np.array([]),
+                        rerank_k,
+                        resolved[0],
+                    )
+                else:
+                    multi = MultiBackend(resolved)
+                    query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
+                    hits = multi.search(query_emb, k=rerank_k)
+                    # Convert VectorHit list to the dict format expected by _rrf_merge
+                    semantic_results = self._hits_to_dicts(hits, query_emb)
+            else:
+                # Single explicit backend object
+                query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
+                semantic_results = self._backend_search(query_emb, rerank_k, backend)
+
+            # Step 3: RRF merge — with extra streams if multi-backend
+            if extra_backend_results:
+                merged = self._rrf_merge_multi(
+                    fts_results, semantic_results, extra_backend_results, rerank_k
                 )
             else:
-                multi = MultiBackend(resolved)
-                query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
-                hits = multi.search(query_emb, k=rerank_k)
-                # Convert VectorHit list to the dict format expected by _rrf_merge
-                semantic_results = self._hits_to_dicts(hits, query_emb)
-        else:
-            # Single explicit backend object
-            query_emb = self.model.encode(query).astype(np.float32) if self.model else np.array([])
-            semantic_results = self._backend_search(query_emb, rerank_k, backend)
+                merged = self._rrf_merge(fts_results, semantic_results, rerank_k)
 
-        # Step 3: RRF merge — with extra streams if multi-backend
-        if extra_backend_results:
-            merged = self._rrf_merge_multi(
-                fts_results, semantic_results, extra_backend_results, rerank_k
-            )
-        else:
-            merged = self._rrf_merge(fts_results, semantic_results, rerank_k)
+            merged = self._filter_candidates(merged, layers, start_date, end_date)
 
-        # Step 4: Cross-encoder re-rank
-        if self.config.reranker_enabled and self.reranker:
-            merged = self._rerank(query, merged)
-            merged = merged[:self.config.reranker_final_k]
-        else:
-            merged = merged[:limit]
+            # Step 4: Cross-encoder re-rank
+            if self.config.reranker_enabled and self.reranker:
+                merged = self._rerank(query, merged)
+                merged = merged[:self.config.reranker_final_k]
+            else:
+                merged = merged[:limit]
 
         # Optional agent filter
         if agent_id:
@@ -1003,6 +1209,7 @@ class RetrievalEngine:
                 "rrf_score": r.get("rrf_score"),
                 "rerank_score": r.get("rerank_score"),
                 "decay_score": r.get("decay_score"),
+                "layer": r.get("layer", "knowledge"),
                 "chunk_text": chunk_text,
                 "heading_context": r.get("heading_context", ""),
                 "token_count": r.get("token_count", 0),
@@ -1042,6 +1249,10 @@ class RetrievalEngine:
                     )
 
         return results
+
+    def search(self, *args, **kwargs) -> List[Dict]:
+        """Backward-compatible alias for callers that use search() terminology."""
+        return self.retrieve(*args, **kwargs)
 
     def expand_result(
         self,
