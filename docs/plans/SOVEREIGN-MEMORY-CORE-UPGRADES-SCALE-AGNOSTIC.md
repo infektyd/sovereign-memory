@@ -2,7 +2,7 @@
 
 ## Context
 
-This plan implements the full audit roadmap (Tier 1 + Tier 2 + Tier 3) plus a **storage abstraction** that lets agents/LLMs choose their backend — SQLite (default, lean, local-first) or an external vector DB (when scale demands it) — and talk between them. SQLite is **not** removed. The vector DB is opt-in, additive, and the SQLite path remains the source of truth.
+This plan implements the full audit roadmap (Tier 1 + Tier 2 + Tier 3) plus a **storage abstraction** that lets agents/LLMs choose their backend — SQLite (default, lean, local-first) or an external vector DB (when scale demands it) — and talk between them. SQLite is **not** removed. The vector DB is opt-in, additive, and the SQLite path remains the source of truth (for now).
 
 It also formalizes the **agent contract surface** that has so far been implicit: a canonical agent contract, a vault/wiki operating contract, page schemas with status lifecycles, recall evaluation, policy/privacy posture, handoff packets, and hygiene reporting. Together these turn the engine work below from "technically correct" into "contractually trustworthy" to every agent that consumes Sovereign Memory.
 
@@ -128,7 +128,7 @@ A peer document to 0.4 that codifies vault behavior across all agents.
   - **Page types.** The eight page types (Phase 1.3) with one-paragraph definitions and example frontmatter.
   - **Status lifecycle.** `draft → candidate → accepted → superseded → rejected → expired` with the rules for each transition (who can perform it, what happens to the index, whether the page stays in recall pool).
   - **Sourcing rules.** Every wiki page must cite its sources (paths, wikilinks, recall trace IDs) in frontmatter. Pages without sources start at `status: draft` and require human or agent review to advance.
-  - **Hygiene rules.** Index must be appended on creation. `log.md` must be appended on creation/edit/supersession. Broken wikilinks must be reported by Phase 5.4 hygiene; agents may not silently drop them.
+  - **Hygiene rules.** Index must be appended on creation. `log.md` must be appended on creation/edit/supersession. Broken wikilinks must be reported by Phase 5.4 hygiene; agents may not silently drop them. All durable writes MUST go through the daemon JSON-RPC surface; direct filesystem edits are treated as external imports and trigger hygiene alerts.
   - **Privacy rules.** Per-page `privacy_level` (Phase 1.2). What goes in `raw/` vs `wiki/`. What never goes in either (secrets, credentials, raw session content with PII).
 - **New file:** `docs/contracts/PAGE_TYPES.md`. Concrete examples — one rendered example page per type, with frontmatter and body, used as templates.
 - **Wired into `seed_identity.py` and per-agent `schema/AGENTS.md`.** Each agent's vault still has its own `schema/AGENTS.md` (existing convention), but it now extends from `docs/contracts/VAULT.md` instead of duplicating it. The plugin's `vault.ts:schemaContent()` is updated to emit a stub that points at the canonical doc.
@@ -144,6 +144,7 @@ Replace today's flat `limit=N` with a tiered context-budget contract that lets a
   4. `document` — adds the full source document (only available for `whole_document=1` rows or when explicitly requested by ID). Variable size.
 - **API:** `daemon.search(query, depth="snippet", limit=8)` is default. Agent re-requests `daemon.expand(result_id, depth="chunk")` for the few that matter, using the `chunk_id` from the previous envelope.
 - **Token-budgeted bulk:** `daemon.search(query, budget_tokens=2000, depth="auto")` uses tiktoken to pack as many results as fit, mixing depths (top-K headlines, top-3 snippets, top-1 chunks).
+- **Maximal Marginal Relevance (MMR) Auto-Packing:** When `budget_tokens` is specified, the packing algorithm applies an MMR post-pass to guarantee semantic diversity in the envelope. This prevents an agent's context budget from being saturated by 15 highly-ranked but identical episodic events.
 - **Why:** Cuts default recall token cost ~3-4x without losing access to detail. The agent decides where to spend tokens.
 - **Risk:** None for legacy clients — `depth` is optional and defaults to `snippet` (current shape).
 
@@ -208,7 +209,7 @@ Field semantics:
 - `privacy_level`: `safe | local-only | private | blocked`. Drives whether the result is shareable across agents, included in handoff packets, or redacted.
 - `source_authority`: `schema | handoff | decision | session | concept | procedure | artifact | daemon | vault`. Already partially computed in `task.ts:authorityForSource()` — promoted to a first-class field.
 - `review_state`: page-status from Phase 1.3 (`draft | candidate | accepted | superseded | rejected | expired`). Default queries skip `superseded` and `rejected`; flag opt-in to include them.
-- `instruction_like`: boolean. True when the chunk text matches injection-suspect patterns (imperative voice toward the model, "ignore previous instructions" classes of phrasing, role-play directives). The agent treats `true` results as evidence about what someone wrote, never as an instruction to follow.
+- `instruction_like`: boolean. True when the chunk text matches injection-suspect patterns (imperative voice toward the model, "ignore previous instructions" classes of phrasing, role-play directives). Computed via a deterministic regex detector (`engine/safety.py`) during `scoring.compute_confidence()` on every chunk before assembly. The agent treats `true` results as evidence about what someone wrote, never as an instruction to follow.
 - `wikilink`: stable wiki link back to the source page (for citation in agent output).
 - `evidence_refs`: list of wikilinks/paths the source page itself cites. Lets the agent walk a citation chain in one envelope.
 - `recommended_action`: `cite | follow_up | ignore | escalate`. A small heuristic recommendation the agent may override.
@@ -298,7 +299,7 @@ This is the new piece beyond the audit. One PR. **All defaults preserve current 
 
 ### 2.5 Cross-backend RRF in retrieval
 
-- Modify `engine/retrieval.py`: the existing FTS+semantic RRF stays; add a third (or Nth) input stream when multi-backend is active. Each backend contributes its own ranked list; RRF merges all of them with the same `1/(k+rank)` formula. The `backend` field appears in `provenance` so the LLM sees which sources agreed.
+- Modify `engine/retrieval.py`: the existing FTS+semantic RRF stays; add a third (or Nth) input stream when multi-backend is active. Each backend contributes its own ranked list; RRF merges all of them with the same `1/(k+rank)` formula. To prevent multi-backend sync lag inconsistencies, verify `db.chunk_exists(chunk_id)` before final assembly. The `backend` field appears in `provenance` so the LLM sees which sources agreed.
 
 **Why this answers "scale-agnostic while lean":**
 
@@ -357,6 +358,7 @@ Documented, repeatable workflows that agents (and the operator) follow. Each is 
 - Migration `004_layer_column.sql`: `ALTER TABLE documents ADD COLUMN layer TEXT DEFAULT NULL` and `ALTER TABLE chunk_embeddings ADD COLUMN layer TEXT DEFAULT NULL`. Indexer back-fills based on existing rules: `whole_document=1 AND agent LIKE 'identity:%'` → `identity`; episodic_events stay where they are; everything else → `knowledge`. Wiki frontmatter `type: artifact` → `artifact`.
 - `search()` accepts `layers: list[str] | None`. None = all (current behavior).
 - Daemon exposes `daemon.search(query, layers=["knowledge"])`.
+- **Chronological Retrieval (Time-Series RAG):** `search()` accepts a `sort: "semantic" | "chronological"` flag (default semantic) and optional `start_date` / `end_date`. When an agent needs to reconstruct a timeline, `sort="chronological"` bypasses RRF and semantic ranking entirely to return a strict linear narrative, neutralizing LLM confusion over interleaved timeframes.
 - **Risk:** None — defaults to all layers, identical to today.
 
 ### 3.3 Structured learnings + contradiction detection
@@ -364,6 +366,7 @@ Documented, repeatable workflows that agents (and the operator) follow. Each is 
 - Migration `005_structured_learnings.sql`: `ALTER TABLE learnings ADD COLUMN assertion TEXT, applies_when TEXT, evidence_doc_ids TEXT, contradicts_id INTEGER REFERENCES learnings(learning_id)`. All nullable.
 - New function in `engine/writeback.py`: `detect_contradictions(content_or_assertion, agent_id)` runs a semantic search against active learnings; returns hits with cosine > 0.85.
 - `learn()` JSON-RPC: if contradictions found and `force=False` (default), returns `{status: "contradiction", candidates: [...]}` instead of writing. Agent must resubmit with `force=true` or supply `contradicts_id`.
+- **Native Resolution Tool:** To prevent agents from lazily spamming `force=true` and causing vault rot, agents get a new `daemon.resolve_contradiction(new_content, supersede_ids=[...])` tool. This writes the new learning and atomically updates the `superseded_by` lifecycle status on the old conflicting pages, allowing agents to explicitly repair the wiki graph.
 - Old free-text `content` stays canonical; new fields populated when caller provides them. Plugin's `assessLearningQuality` already does some of this client-side — the daemon now does it for *all* clients (Codex, Hermes, OpenClaw, Claude Code) uniformly.
 - **Verification:** Round-trip test: store a learning, store a contradicting one, assert daemon blocks without `force`.
 
@@ -374,6 +377,7 @@ Documented, repeatable workflows that agents (and the operator) follow. Each is 
   - **AFM-assisted** (opt-in via `expand="afm"`): calls existing AFM bridge at `127.0.0.1:11437/v1/chat/completions` with a 2-shot prompt that returns 2-3 reformulations.
 - `search()` accepts `expand: bool | "rule" | "afm"`. Default `True` = rule-based (cheap). Each variant runs full hybrid retrieval; results merged via RRF.
 - Response includes `query_variants: list[str]`.
+- **Graph Neighborhood Summarization (AFM-assisted):** `search()` accepts `summarize_neighborhood: bool`. When an agent recalls a specific entity/concept page, the daemon uses the AFM bridge to quickly summarize its 1-hop wiki links (e.g., "Entity X is heavily cited alongside System Y and was superseded by Z"). This saves the agent from spending multiple `expand()` token roundtrips performing manual graph traversal.
 - **Default-flip gate:** AFM mode only flips on after Phase 3.0 harness shows ≥+5% recall@5.
 - **Risk:** Latency — rule-based is negligible; AFM is +200ms but gated.
 
@@ -402,18 +406,6 @@ Documented, repeatable workflows that agents (and the operator) follow. Each is 
 - Every `search()` returns `trace_id`. New JSON-RPC `daemon.trace(trace_id)` returns the full trace JSON.
 - **Risk:** Memory bounded by ring buffer (~5MB max).
 
-### 4.3 Quantized embeddings (opt-in)
-
-- Config: `embedding_quantization: "fp32" | "int8"` (default `fp32`).
-- `int8` mode wraps FAISS index in `IndexHNSWPQ` (or `IndexHNSWSQ` for simpler scalar quant). Triggered at index rebuild.
-- Migration not needed — the SQLite blob still holds fp32 (truth source); quantization is downstream.
-- **Verification:** Recall@5 measured on the Phase 3.0 harness; expect ≥95% of fp32 recall.
-
-### 4.4 Semantic chunking pass (opt-in)
-
-- Config: `chunking_semantic_merge: bool = False`.
-- Post-pass in chunker: adjacent chunks within the same heading whose embedding cosine > 0.9 merge into one (capped at `max_tokens`).
-- Reindex required after enabling. CLI: `python -m engine.sovereign_memory index --semantic-merge`.
 
 ### 4.5 Cross-agent provenance edges
 
@@ -442,6 +434,7 @@ Generalizes the Claude Code plugin's per-vault `inbox/` into a cross-agent contr
 - **Daemon mediator.** New JSON-RPC `daemon.handoff(from_agent, to_agent, packet)` validates, redacts per `POLICY.md`, writes to recipient inbox, audits both sides. The existing `sovereign_negotiate_handoff` MCP tool builds the packet; this method delivers it.
 - **Handoff page type.** Phase 1.3 introduces `wiki/handoffs/`. Significant handoffs are also compiled into a `wiki/handoffs/` page (status `accepted`) so they become recall-able durable memory, not just transient inbox files.
 - **Verification:** Cross-agent round-trip — Codex sends a handoff packet to Claude Code; Claude Code's next SessionStart hook reads the inbox; Claude Code's recall surfaces the handoff page within 1 indexer pass.
+- **Handoff Context Priming:** When `SessionStart` parses a pending handoff packet, the daemon eagerly resolves the `wikilink_refs` attached to the packet and injects their snippets directly into the boot envelope. The receiving agent wakes up pre-warmed with the exact memory context needed to begin the handed-off task.
 
 ---
 
@@ -502,7 +495,7 @@ Reads `accepted` pages within the same `tags` cluster or wikilink neighborhood. 
 Detects repeated patterns in episodic events and `session` pages: "agent did X, then Y, then Z" appearing 3+ times across sessions. Drafts a `procedure` page codifying the steps with citations to the originating sessions. The agent can then recall the procedure instead of rediscovering the pattern each time.
 
 #### 6.1.d Reorganization pass
-Reads the vault as a graph (`memory_links` + wikilinks). Detects:
+Reads the vault as a graph (`memory_links` + wikilinks). Operates incrementally by default (`config.reorg_horizon_days=30`) to avoid O(N) scaling bottlenecks on massive vaults, processing only recently updated pages and their 1–2 hop neighbors. Detects:
 - **Overloaded entities** (one page accumulating ≥N distinct concepts) → drafts split proposals, with the original marked `superseded_by` the new peer set.
 - **Redundant concepts** (two pages with embedding cosine > 0.92 and overlapping wikilink sets) → drafts merge proposals.
 - **Orphan pages** (no wikilinks, no `index.md` entry) → drafts a "rehome" proposal: which existing pages should link to this, or whether it should be archived.
@@ -519,7 +512,8 @@ The pass writes its proposals to a single `inbox/afm-pruning-YYYY-MM-DD.json` pa
 
 ### 6.2 Scheduling and triggers
 
-- **Idle scheduler.** New `engine/afm_scheduler.py` runs as part of the daemon (or a sibling process). When the daemon has been idle for ≥5 minutes (no JSON-RPC traffic) and the AFM bridge is healthy, it picks the most-overdue pass and runs it.
+- **Idle scheduler.** New `engine/afm_scheduler.py` runs as part of the daemon (or a sibling process). Uses a robust `last_activity_ts` check across all operations to prevent starving. When idle for ≥300s with no active long-running ops, it picks the most-overdue pass and runs it.
+- **Single-Writer Queue.** All AFM passes emit *proposals* to an in-memory queue rather than writing directly. A dedicated background writer thread (`engine/afm_writer.py`) drains the queue, acquires a short-lived per-page lock, applies `assessLearningQuality` + contradiction detection, then writes. This entirely eliminates concurrent write corruption between passes, agents, and indexers.
 - **Configurable cadence.** Per-pass intervals in `config.afm_loop_schedule`:
   ```python
   {
@@ -586,6 +580,25 @@ In addition to the universal verification list:
 
 ---
 
+## Phase 7 — Advanced Post-Rollout Enhancements (Deferred)
+
+These features add latency and complexity but provide massive scale/density benefits. They should only be implemented *after* Phase 6 has stabilized and the eval harness can measure their exact impact.
+
+### 7.1 Quantized embeddings (opt-in)
+
+- Config: `embedding_quantization: "fp32" | "int8"` (default `fp32`).
+- `int8` mode wraps FAISS index in `IndexHNSWPQ` (or `IndexHNSWSQ` for simpler scalar quant). Triggered at index rebuild.
+- Migration not needed — the SQLite blob still holds fp32 (truth source); quantization is downstream.
+- **Verification:** Recall@5 measured on the Phase 3.0 harness; expect ≥95% of fp32 recall.
+
+### 7.2 Semantic chunking pass (opt-in)
+
+- Config: `chunking_semantic_merge: bool = False`.
+- Post-pass in chunker: adjacent chunks within the same heading whose embedding cosine > 0.9 merge into one (capped at `max_tokens`).
+- Reindex required after enabling. CLI: `python -m engine.sovereign_memory index --semantic-merge`.
+
+---
+
 ## Critical files reference
 
 - `engine/db.py` — wire migrations runner (Phase 0.1)
@@ -641,10 +654,11 @@ These documents are first-class deliverables of the plan — not engineering exh
 9. **PR-8: Phase 3.5** — HyDE under confidence gate (default flip after eval gate clears).
 10. **PR-9: Phase 4.1 + 4.2** — feedback + trace. Nearly free, highest observability lift.
 11. **PR-10: Phase 4.6** — agent inbox/outbox + handoff spec. Cross-agent contract surface.
-12. **PR-11 onwards: Phase 4.3–4.5 + Phase 5** — quantization, semantic merge, provenance edges, health report, hygiene report. Incremental as appetite allows.
+12. **PR-11 onwards: Phase 4.5 + Phase 5** — provenance edges, health report, hygiene report. Incremental as appetite allows.
 13. **PR-12: Phase 6 PR-A** — AFM compilation scheduler + session distillation pass + prompt contracts + lifecycle gating + observability. The minimum end-to-end self-organizing loop.
 14. **PR-13: Phase 6 PR-B** — synthesis + procedure extraction passes.
 15. **PR-14: Phase 6 PR-C** — reorganization + pruning passes (most invasive, ships last).
+16. **PR-15: Phase 7** — Quantized embeddings and semantic chunk merging (deferred advanced features).
 
 Each PR is independently shippable, independently revertible, and leaves the daemon in a working state.
 
