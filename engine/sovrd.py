@@ -353,7 +353,25 @@ def _handle_read(params: dict, request_id: Any) -> dict:
 
 
 def _handle_learn(params: dict, request_id: Any) -> dict:
-    """Store a learning with optional dual-write to flat-file."""
+    """Store a learning with optional dual-write to flat-file.
+
+    PR-6 behavior change: if contradictions are detected and ``force`` is not
+    True (default False), returns::
+
+        {"status": "contradiction", "candidates": [...]}
+
+    without writing anything.  The caller must either resubmit with
+    ``force=true`` to bypass detection, or supply a ``contradicts_id`` to
+    explicitly record which prior learning is contradicted.
+
+    On success the return shape is unchanged::
+
+        {"status": "ok", "learning_id": <int>, "agent_id": ..., "category": ..., "dual_write": <bool>}
+
+    Backward compatibility: existing calls without the new fields (assertion,
+    applies_when, evidence_doc_ids, contradicts_id, force) continue to work
+    exactly as before — the default of force=False is the only new behavior.
+    """
     global _request_count, _dual_write_enabled
     _request_count += 1
 
@@ -363,21 +381,105 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
 
     agent_id = params.get("agent_id", "hermes")
     category = params.get("category", "general")
+    force = bool(params.get("force", False))
+
+    # PR-6 structured fields (all optional)
+    assertion = params.get("assertion")        # explicit structured assertion
+    applies_when = params.get("applies_when")  # scoping condition
+    evidence_doc_ids = params.get("evidence_doc_ids")  # list of doc ids
+    contradicts_id = params.get("contradicts_id")      # explicit contradiction
 
     try:
         wb = _lazy_writeback()
-        lid = wb.store_learning(
-            agent_id=agent_id,
-            content=content,
-            category=category,
-            confidence=params.get("confidence", 1.0),
+
+        # ── PR-6: Contradiction Detection ────────────────────────────────────
+        # Skip detection when the caller explicitly forces the write or already
+        # acknowledges a specific contradicts_id.
+        if not force and contradicts_id is None:
+            # Use the explicit assertion if provided, otherwise extract the
+            # first sentence of content (or content itself if short).
+            check_text = assertion or _extract_assertion(content)
+            try:
+                candidates = wb.detect_contradictions(
+                    content_or_assertion=check_text,
+                    agent_id=None,  # cross-agent — global check
+                )
+            except Exception as exc:
+                logger.warning(
+                    "learn: contradiction detection failed (%s) — proceeding with write",
+                    exc,
+                )
+                candidates = []
+
+            if candidates:
+                return _make_response({
+                    "status": "contradiction",
+                    "candidates": candidates,
+                }, request_id)
+
+        # ── Store the learning ───────────────────────────────────────────────
+        import sqlite3 as _sqlite3, time as _time, json as _json
+        import numpy as _np
+
+        now = _time.time()
+        doc_ids_json = _json.dumps(evidence_doc_ids) if evidence_doc_ids else None
+
+        # Embed for semantic search (and future contradiction detection)
+        emb_bytes = None
+        if wb.model:
+            try:
+                emb = wb.model.encode(content).astype(_np.float32)
+                emb_bytes = emb.tobytes()
+            except Exception as exc:
+                logger.warning("learn: embedding failed (%s) — storing without embedding", exc)
+
+        # Resolve category
+        from writeback import CATEGORIES
+        if category not in CATEGORIES:
+            category = "general"
+
+        with wb.db.cursor() as c:
+            c.execute("""
+                INSERT INTO learnings
+                (agent_id, category, content, source_doc_ids, source_query,
+                 confidence, embedding, created_at,
+                 assertion, applies_when, evidence_doc_ids, contradicts_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                agent_id, category, content,
+                None,              # source_doc_ids (legacy field, not the new evidence_doc_ids)
+                params.get("source_query"),
+                params.get("confidence", 1.0),
+                emb_bytes, now,
+                assertion, applies_when, doc_ids_json,
+                contradicts_id,
+                "active",
+            ))
+            lid = c.lastrowid
+
+            # If caller supplies supersedes, mark the old learning
+            supersedes = params.get("supersedes")
+            if supersedes:
+                c.execute(
+                    "UPDATE learnings SET superseded_by = ? WHERE learning_id = ?",
+                    (lid, supersedes),
+                )
+
+        logger.info(
+            "Stored learning #%d [%s/%s]: %.60s…",
+            lid, agent_id, category, content,
         )
+
+        # Write to disk as markdown (Obsidian integration — existing behaviour)
+        if wb.config.writeback_enabled:
+            wb._write_to_disk(lid, agent_id, category, content, now)
 
         dw_ok = False
         if _dual_write_enabled:
             dw_ok = _flatfile_append(content, category)
 
         return _make_response({
+            "status": "ok",
             "learning_id": lid,
             "agent_id": agent_id,
             "category": category,
@@ -386,6 +488,129 @@ def _handle_learn(params: dict, request_id: Any) -> dict:
     except Exception as exc:
         logger.exception("learn failed")
         return _make_error(-32000, f"Learn error: {exc}", request_id)
+
+
+def _extract_assertion(content: str) -> str:
+    """
+    Extract a short assertion from content for contradiction checking.
+
+    Uses the first sentence if content is longer than 120 characters,
+    otherwise uses content as-is.
+    """
+    content = content.strip()
+    if len(content) <= 120:
+        return content
+    # Split on common sentence terminators followed by whitespace
+    import re
+    m = re.search(r'[.!?]\s', content)
+    if m:
+        return content[:m.start() + 1].strip()
+    return content[:120].strip()
+
+
+def _handle_resolve_contradiction(params: dict, request_id: Any) -> dict:
+    """Write a new learning and atomically supersede a list of prior learnings.
+
+    Params:
+        new_content (str, required): Content of the new learning.
+        supersede_ids (list[int], required): IDs of learnings to supersede.
+        agent_id (str, optional): Agent writing this resolution.
+        category (str, optional): Category for the new learning.
+        assertion (str, optional): Structured assertion for the new learning.
+        applies_when (str, optional): Scoping condition.
+        evidence_doc_ids (list, optional): Supporting document IDs.
+
+    Returns on success::
+
+        {"status": "ok", "new_learning_id": <int>, "superseded": [<int>, ...]}
+
+    The operation is a single SQLite transaction: either the new learning is
+    written AND all supersede_ids are updated, or nothing changes.
+    """
+    global _request_count
+    _request_count += 1
+
+    new_content = params.get("new_content", "")
+    if not new_content:
+        return _make_error(-32602, "new_content is required", request_id)
+
+    supersede_ids = params.get("supersede_ids", [])
+    if not isinstance(supersede_ids, list):
+        return _make_error(-32602, "supersede_ids must be a list", request_id)
+
+    agent_id = params.get("agent_id", "hermes")
+    category = params.get("category", "general")
+    assertion = params.get("assertion")
+    applies_when = params.get("applies_when")
+    evidence_doc_ids = params.get("evidence_doc_ids")
+
+    try:
+        import time as _time, json as _json
+        import numpy as _np
+
+        wb = _lazy_writeback()
+
+        from writeback import CATEGORIES
+        if category not in CATEGORIES:
+            category = "general"
+
+        now = _time.time()
+        doc_ids_json = _json.dumps(evidence_doc_ids) if evidence_doc_ids else None
+
+        emb_bytes = None
+        if wb.model:
+            try:
+                emb = wb.model.encode(new_content).astype(_np.float32)
+                emb_bytes = emb.tobytes()
+            except Exception as exc:
+                logger.warning(
+                    "resolve_contradiction: embedding failed (%s) — storing without embedding",
+                    exc,
+                )
+
+        # Single transaction: write new + supersede old
+        with wb.db.transaction() as c:
+            c.execute("""
+                INSERT INTO learnings
+                (agent_id, category, content, source_doc_ids, source_query,
+                 confidence, embedding, created_at,
+                 assertion, applies_when, evidence_doc_ids, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                agent_id, category, new_content,
+                None, None,
+                params.get("confidence", 1.0),
+                emb_bytes, now,
+                assertion, applies_when, doc_ids_json,
+                "active",
+            ))
+            new_lid = c.lastrowid
+
+            for sid in supersede_ids:
+                c.execute(
+                    """UPDATE learnings
+                       SET superseded_by = ?, status = 'superseded'
+                       WHERE learning_id = ?""",
+                    (new_lid, sid),
+                )
+
+        logger.info(
+            "Resolved contradiction: new learning #%d supersedes %s",
+            new_lid, supersede_ids,
+        )
+
+        # Write to disk as markdown
+        if wb.config.writeback_enabled:
+            wb._write_to_disk(new_lid, agent_id, category, new_content, now)
+
+        return _make_response({
+            "status": "ok",
+            "new_learning_id": new_lid,
+            "superseded": supersede_ids,
+        }, request_id)
+    except Exception as exc:
+        logger.exception("resolve_contradiction failed")
+        return _make_error(-32000, f"Resolve contradiction error: {exc}", request_id)
 
 
 def _handle_log_event(params: dict, request_id: Any) -> dict:
@@ -469,13 +694,14 @@ def _handle_status(params: dict, request_id: Any) -> dict:
 
 # Method registry
 _METHODS: Dict[str, callable] = {
-    "ping":       _handle_ping,
-    "search":     _handle_search,
-    "expand":     _handle_expand,
-    "read":       _handle_read,
-    "learn":      _handle_learn,
-    "log_event":  _handle_log_event,
-    "status":     _handle_status,
+    "ping":                   _handle_ping,
+    "search":                 _handle_search,
+    "expand":                 _handle_expand,
+    "read":                   _handle_read,
+    "learn":                  _handle_learn,
+    "resolve_contradiction":  _handle_resolve_contradiction,
+    "log_event":              _handle_log_event,
+    "status":                 _handle_status,
 }
 
 # ── Unix socket server ───────────────────────────────────────────────────

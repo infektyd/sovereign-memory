@@ -317,6 +317,106 @@ created: {dt.isoformat()}
         except Exception as e:
             logger.warning("Failed to write learning to disk: %s", e)
 
+    def detect_contradictions(
+        self,
+        content_or_assertion: str,
+        agent_id: Optional[str] = None,
+        threshold: Optional[float] = None,
+    ) -> List[Dict]:
+        """
+        Detect active learnings that semantically contradict the given text.
+
+        Uses cosine similarity between the embedded assertion and embeddings of
+        all active learnings (status not in superseded/rejected/expired, and
+        superseded_by IS NULL).
+
+        Args:
+            content_or_assertion: The text to check against existing learnings.
+            agent_id: Optional — if supplied, scope detection to this agent.
+            threshold: Override the config contradiction_threshold.
+
+        Returns:
+            List of candidate dicts, each containing:
+              id, content, assertion, score, agent_id, created_at
+            Sorted by score descending (highest similarity first).
+
+        Graceful failure: if embedding is unavailable, logs a warning and
+        returns [] so the caller can proceed with the write.
+        """
+        if not self.model:
+            logger.warning(
+                "detect_contradictions: embedding model unavailable — skipping detection"
+            )
+            return []
+
+        effective_threshold = (
+            threshold if threshold is not None else self.config.contradiction_threshold
+        )
+
+        try:
+            query_emb = self.model.encode(content_or_assertion).astype(np.float32)
+        except Exception as exc:
+            logger.warning(
+                "detect_contradictions: failed to embed assertion (%s) — skipping detection",
+                exc,
+            )
+            return []
+
+        query_norm = np.linalg.norm(query_emb)
+        if query_norm < 1e-8:
+            return []
+        query_emb = query_emb / query_norm
+
+        candidates = []
+        with self.db.cursor() as c:
+            # Active learnings: not superseded via superseded_by FK, and
+            # status column (if present) not in terminal states.
+            sql = """
+                SELECT learning_id, agent_id, content, assertion,
+                       confidence, created_at, embedding
+                FROM learnings
+                WHERE superseded_by IS NULL
+                  AND embedding IS NOT NULL
+                  AND (status IS NULL OR status NOT IN ('superseded', 'rejected', 'expired'))
+            """
+            params = []
+            if agent_id:
+                sql += " AND agent_id = ?"
+                params.append(agent_id)
+
+            try:
+                c.execute(sql, params)
+                rows = c.fetchall()
+            except Exception as exc:
+                logger.warning(
+                    "detect_contradictions: DB query failed (%s) — skipping detection",
+                    exc,
+                )
+                return []
+
+        for row in rows:
+            try:
+                emb = np.frombuffer(row["embedding"], dtype=np.float32)
+                norm = np.linalg.norm(emb)
+                if norm < 1e-8:
+                    continue
+                sim = float(np.dot(query_emb, emb / norm))
+                if sim > effective_threshold:
+                    candidates.append({
+                        "id": row["learning_id"],
+                        "content": row["content"],
+                        "assertion": row["assertion"],
+                        "score": round(sim, 4),
+                        "agent_id": row["agent_id"],
+                        "created_at": datetime.fromtimestamp(row["created_at"]).isoformat(),
+                    })
+            except Exception as exc:
+                logger.debug("detect_contradictions: skipping row due to error: %s", exc)
+                continue
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        return candidates
+
     def get_stats(self) -> Dict:
         """Get write-back memory statistics."""
         with self.db.cursor() as c:

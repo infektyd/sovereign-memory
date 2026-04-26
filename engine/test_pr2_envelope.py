@@ -6,7 +6,7 @@ Covers:
   2.2  compute_confidence: over known distribution
   2.3  is_instruction_like: positive + negative examples
   2.4  explain(result_record): deterministic rationale output
-  2.5  Migration 002: user_version bumps to 2
+  2.5  Migration 002: user_version reaches the current migration target
   2.6  Default-recall filtering: superseded/rejected/draft excluded
   2.7  include_* flags restore filtered results
   2.8  Envelope fields: all PR-2 keys present in snippet output
@@ -372,13 +372,13 @@ class TestExplain:
 
 
 # ---------------------------------------------------------------------------
-# 2.5  Migration 002: user_version bumps to 2
+# 2.5  Migration 002: user_version reaches the current migration target
 # ---------------------------------------------------------------------------
 
 class TestMigration002:
 
-    def test_migration_002_bumps_user_version_to_2(self, tmp_path):
-        """After migrations, user_version == 2."""
+    def test_migration_002_bumps_user_version_to_current_target(self, tmp_path):
+        """After migrations, user_version matches the highest known migration."""
         from migrations import run_migrations
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
@@ -399,7 +399,7 @@ class TestMigration002:
         run_migrations(conn)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
-        assert version == 2, f"Expected user_version=2, got {version}"
+        assert version == 5, f"Expected user_version=5, got {version}"
 
     def test_score_distribution_table_exists(self, tmp_path):
         """Migration 002 creates score_distribution table."""

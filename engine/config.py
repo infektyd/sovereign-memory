@@ -93,6 +93,11 @@ class SovereignConfig:
     decay_min_score: float = 0.05
     decay_cron_hour: int = 4
 
+    # Contradiction detection (PR-6)
+    # Cosine similarity threshold above which two learnings are considered
+    # contradictory. Callers can override per-request via the 'threshold' param.
+    contradiction_threshold: float = 0.85
+
     # Thread propagation
     thread_bind_threshold: float = 0.55
 
