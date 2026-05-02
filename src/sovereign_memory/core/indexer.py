@@ -165,14 +165,18 @@ class VaultIndexer:
 
             # Phase 2: Remove docs no longer on disk
             c.execute("SELECT doc_id, path FROM documents")
+            to_delete = []
             for row in c.fetchall():
                 if row["path"] not in disk_files:
-                    c.execute("DELETE FROM documents WHERE doc_id = ?", (row["doc_id"],))
-                    c.execute("DELETE FROM vault_fts WHERE doc_id = ?", (row["doc_id"],))
-                    c.execute("DELETE FROM chunk_embeddings WHERE doc_id = ?", (row["doc_id"],))
+                    to_delete.append((row["doc_id"],))
                     stats["deleted"] += 1
                     if verbose:
                         logger.info("  🗑 Removed: %s", row["path"])
+
+            if to_delete:
+                c.executemany("DELETE FROM chunk_embeddings WHERE doc_id = ?", to_delete)
+                c.executemany("DELETE FROM vault_fts WHERE doc_id = ?", to_delete)
+                c.executemany("DELETE FROM documents WHERE doc_id = ?", to_delete)
 
         # Phase 3: Rebuild FAISS index from all embeddings
         self._rebuild_faiss_index()
